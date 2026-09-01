@@ -80,7 +80,7 @@ info "Проверяю SRv6-политику на r1"
 sudo docker exec $LAB-r1 ip route show vrf vrf1 || true
 
 info "Пингую 10.0.3.1 с r1 через SRv6"
-if sudo docker exec $LAB-r1 ip vrf exec vrf1 ping -c4 10.0.3.1; then
+if sudo docker exec $LAB-r1 ip vrf exec vrf1 ping -c4 -I 10.0.1.1 10.0.3.1; then
   echo
   grn "Готово. IPv4 ходит внутри SRv6."
   echo
