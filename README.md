@@ -1,4 +1,4 @@
-# SRv6-лаба на FRR
+# SRv6 на FRR
 
 Дополнение к [srv6.md](https://srv6.md).
 
