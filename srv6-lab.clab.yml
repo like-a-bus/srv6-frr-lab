@@ -1,0 +1,54 @@
+name: srv6-lab
+
+topology:
+  defaults:
+    kind: linux
+    image: quay.io/frrouting/frr:10.7.1
+    sysctls:
+      net.ipv6.conf.all.forwarding: 1
+      net.ipv4.conf.all.forwarding: 1
+      net.ipv6.conf.all.seg6_enabled: 1
+      net.ipv6.conf.default.seg6_enabled: 1
+
+  nodes:
+    r1:
+      binds:
+        - r1/daemons:/etc/frr/daemons
+        - r1/frr.conf:/etc/frr/frr.conf
+        - r1/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - sysctl -qw net.vrf.strict_mode=1
+        - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
+        - ip link add vrf1 type vrf table 100
+        - ip link set vrf1 up
+        - ip link add lo1 type dummy
+        - ip link set lo1 master vrf1
+        - ip link set lo1 up
+        - ip addr add 10.0.1.1/32 dev lo1
+        - vtysh -b
+
+    r2:
+      binds:
+        - r2/daemons:/etc/frr/daemons
+        - r2/frr.conf:/etc/frr/frr.conf
+        - r2/vtysh.conf:/etc/frr/vtysh.conf
+
+    r3:
+      binds:
+        - r3/daemons:/etc/frr/daemons
+        - r3/frr.conf:/etc/frr/frr.conf
+        - r3/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - sysctl -qw net.vrf.strict_mode=1
+        - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
+        - ip link add vrf1 type vrf table 100
+        - ip link set vrf1 up
+        - ip link add lo1 type dummy
+        - ip link set lo1 master vrf1
+        - ip link set lo1 up
+        - ip addr add 10.0.3.1/32 dev lo1
+        - vtysh -b
+
+  links:
+    - endpoints: ["r1:eth1", "r2:eth1"]
+    - endpoints: ["r2:eth2", "r3:eth1"]
