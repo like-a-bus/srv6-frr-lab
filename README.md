@@ -1,8 +1,23 @@
 # SRv6-лаба на FRR
 
-Три роутера FRR на [Containerlab](https://containerlab.dev). IPv4 передаётся внутри SRv6-туннеля через `End.DT4`.
+Дополнение к [srv6.md](https://srv6.md).
 
-Дополнение к [srv6.md](https://srv6.md), где есть теория, но нет готовой конфигурации.
+## Лаба
+
+```
+    fc00:12::/64        fc00:23::/64
+r1 ---------------- r2 ---------------- r3
+```
+
+| Узел | Loopback | Локатор | End.DT4 SID | IPv4 в VRF |
+| ---- | -------- | ------- | ----------- | ---------- |
+| r1 | `fc00::1/128` | `fc00:1::/64` | `fc00:1:0:0:100::` | `10.0.1.1/32` |
+| r2 | `fc00::2/128` | — | — | — |
+| r3 | `fc00::3/128` | `fc00:3::/64` | `fc00:3:0:0:100::` | `10.0.3.1/32` |
+
+IS-IS раздаёт локаторы. На r1 и r3 — VRF с IPv4-адресом на dummy-интерфейсе и `End.DT4` SID. r2 про SRv6 ничего не знает, он доставляет пакет по внешнему IPv6-заголовку.
+
+IPv4-пакет с 10.0.1.1 на 10.0.3.1 инкапсулируется на r1 во внешний IPv6 с SRH, проходит r2 как обычный IPv6, на r3 распаковывается в VRF.
 
 ## 1. Containerlab
 
@@ -41,23 +56,6 @@ bash setup.sh
 ```bash
 sudo containerlab destroy -t srv6-lab.clab.yml
 ```
-
-## Лаба
-
-```
-    fc00:12::/64        fc00:23::/64
-r1 ---------------- r2 ---------------- r3
-```
-
-| Узел | Loopback | Локатор | End.DT4 SID | IPv4 в VRF |
-| ---- | -------- | ------- | ----------- | ---------- |
-| r1 | `fc00::1/128` | `fc00:1::/64` | `fc00:1:0:0:100::` | `10.0.1.1/32` |
-| r2 | `fc00::2/128` | — | — | — |
-| r3 | `fc00::3/128` | `fc00:3::/64` | `fc00:3:0:0:100::` | `10.0.3.1/32` |
-
-IS-IS раздаёт локаторы. На r1 и r3 — VRF с IPv4-адресом на dummy-интерфейсе и `End.DT4` SID. r2 про SRv6 ничего не знает, он доставляет пакет по внешнему IPv6-заголовку.
-
-IPv4-пакет с 10.0.1.1 на 10.0.3.1 инкапсулируется на r1 во внешний IPv6 с SRH, проходит r2 как обычный IPv6, на r3 распаковывается в VRF.
 
 ## Проверка
 
@@ -99,7 +97,7 @@ IP6 fc00:12::1 > fc00:3:0:0:100:: RT6 (type=4, segleft=0, [0]fc00:3:0:0:100::)
 
 ## WSL2
 
-Ядро от Microsoft собрано без `CONFIG_LWTUNNEL`. Пересборка занимает 20–40 минут.
+Ядро от Microsoft собрано без `CONFIG_LWTUNNEL`.
 
 Ветка исходников выбирается по текущему `uname -r`: для `5.15.x` — `linux-msft-wsl-5.15.y`, для `6.6.x` — `linux-msft-wsl-6.6.y`.
 
@@ -163,8 +161,6 @@ echo '{"iptables": false, "ip6tables": false}' | sudo tee /etc/docker/daemon.jso
 sudo systemctl restart docker
 ```
 
-Containerlab соединяет узлы veth-парами, docker NAT в лабе не участвует.
-
 Если `CONFIG_NET_VRF` и `CONFIG_DUMMY` собрались модулями, а не вкомпилированы:
 
 ```bash
@@ -180,7 +176,6 @@ Docker ставить из apt, не из snap — snap-версия не вид
 - [srv6.md: Linux Kernel](https://srv6.md/implementations/linux-kernel/)
 - [srv6.md: FRRouting](https://srv6.md/implementations/frrouting/)
 - [Containerlab](https://containerlab.dev)
-- [segmentrouting/srv6-labs](https://github.com/segmentrouting/srv6-labs)
 
 ## Лицензия
 
