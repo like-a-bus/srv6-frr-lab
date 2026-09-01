@@ -33,6 +33,7 @@ fi
 
 sudo modprobe vrf dummy 2>/dev/null || true
 
+sudo ip -6 route del fc00:9::1/128 2>/dev/null || true
 if ! sudo ip -6 route add fc00:9::1/128 encap seg6local action End dev lo 2>/dev/null; then
   red "ядро не умеет seg6local — SRv6 работать не будет"
   echo "   нужны CONFIG_LWTUNNEL и CONFIG_IPV6_SEG6_LWTUNNEL"
