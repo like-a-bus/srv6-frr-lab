@@ -1,0 +1,154 @@
+{
+  "name": "srv6-lab",
+  "type": "clab",
+  "clab": {
+    "config": {
+      "prefix": "clab",
+      "mgmt": {
+        "network": "clab",
+        "bridge": "br-386b4b945216",
+        "ipv4-subnet": "172.20.20.0/24",
+        "ipv4-gw": "172.20.20.1",
+        "ipv6-subnet": "3fff:172:20:20::/64",
+        "ipv6-gw": "3fff:172:20:20::1",
+        "external-access": true
+      }
+    }
+  },
+  "ssh-pub-keys": [],
+  "nodes": {
+    "r1": {
+      "index": "0",
+      "shortname": "r1",
+      "longname": "clab-srv6-lab-r1",
+      "fqdn": "r1.srv6-lab.io",
+      "group": "",
+      "labdir": "/home/likeabus/srv6-frr-lab/clab-srv6-lab/r1",
+      "kind": "linux",
+      "image": "quay.io/frrouting/frr:10.7.1",
+      "mgmt-net": "",
+      "mgmt-intf": "",
+      "mgmt-ipv4-address": "172.20.20.4",
+      "mgmt-ipv4-prefix-length": 24,
+      "mgmt-ipv6-address": "3fff:172:20:20::4",
+      "mgmt-ipv6-prefix-length": 64,
+      "mac-address": "",
+      "labels": {
+        "clab-git-branch": "main",
+        "clab-git-hash": "a37ed3b",
+        "clab-mgmt-net-bridge": "br-386b4b945216",
+        "clab-node-group": "",
+        "clab-node-kind": "linux",
+        "clab-node-lab-dir": "/home/likeabus/srv6-frr-lab/clab-srv6-lab/r1",
+        "clab-node-longname": "clab-srv6-lab-r1",
+        "clab-node-name": "r1",
+        "clab-node-type": "",
+        "clab-owner": "likeabus",
+        "clab-topo-file": "/home/likeabus/srv6-frr-lab/srv6-lab.clab.yml",
+        "containerlab": "srv6-lab"
+      },
+      "port-bindings": [
+      ]
+    },
+    "r2": {
+      "index": "1",
+      "shortname": "r2",
+      "longname": "clab-srv6-lab-r2",
+      "fqdn": "r2.srv6-lab.io",
+      "group": "",
+      "labdir": "/home/likeabus/srv6-frr-lab/clab-srv6-lab/r2",
+      "kind": "linux",
+      "image": "quay.io/frrouting/frr:10.7.1",
+      "mgmt-net": "",
+      "mgmt-intf": "",
+      "mgmt-ipv4-address": "172.20.20.2",
+      "mgmt-ipv4-prefix-length": 24,
+      "mgmt-ipv6-address": "3fff:172:20:20::2",
+      "mgmt-ipv6-prefix-length": 64,
+      "mac-address": "",
+      "labels": {
+        "clab-git-branch": "main",
+        "clab-git-hash": "a37ed3b",
+        "clab-mgmt-net-bridge": "br-386b4b945216",
+        "clab-node-group": "",
+        "clab-node-kind": "linux",
+        "clab-node-lab-dir": "/home/likeabus/srv6-frr-lab/clab-srv6-lab/r2",
+        "clab-node-longname": "clab-srv6-lab-r2",
+        "clab-node-name": "r2",
+        "clab-node-type": "",
+        "clab-owner": "likeabus",
+        "clab-topo-file": "/home/likeabus/srv6-frr-lab/srv6-lab.clab.yml",
+        "containerlab": "srv6-lab"
+      },
+      "port-bindings": [
+      ]
+    },
+    "r3": {
+      "index": "2",
+      "shortname": "r3",
+      "longname": "clab-srv6-lab-r3",
+      "fqdn": "r3.srv6-lab.io",
+      "group": "",
+      "labdir": "/home/likeabus/srv6-frr-lab/clab-srv6-lab/r3",
+      "kind": "linux",
+      "image": "quay.io/frrouting/frr:10.7.1",
+      "mgmt-net": "",
+      "mgmt-intf": "",
+      "mgmt-ipv4-address": "172.20.20.3",
+      "mgmt-ipv4-prefix-length": 24,
+      "mgmt-ipv6-address": "3fff:172:20:20::3",
+      "mgmt-ipv6-prefix-length": 64,
+      "mac-address": "",
+      "labels": {
+        "clab-git-branch": "main",
+        "clab-git-hash": "a37ed3b",
+        "clab-mgmt-net-bridge": "br-386b4b945216",
+        "clab-node-group": "",
+        "clab-node-kind": "linux",
+        "clab-node-lab-dir": "/home/likeabus/srv6-frr-lab/clab-srv6-lab/r3",
+        "clab-node-longname": "clab-srv6-lab-r3",
+        "clab-node-name": "r3",
+        "clab-node-type": "",
+        "clab-owner": "likeabus",
+        "clab-topo-file": "/home/likeabus/srv6-frr-lab/srv6-lab.clab.yml",
+        "containerlab": "srv6-lab"
+      },
+      "port-bindings": [
+      ]
+    }
+  },
+  "links": [
+    {
+      "endpoints": {
+        "a": {
+          "node": "r1",
+          "interface": "eth1",
+          "mac": "aa:c1:ab:77:ad:7e",
+          "peer": "z"
+        },
+        "z": {
+          "node": "r2",
+          "interface": "eth1",
+          "mac": "aa:c1:ab:15:12:16",
+          "peer": "a"
+        }
+      }
+    },
+    {
+      "endpoints": {
+        "a": {
+          "node": "r2",
+          "interface": "eth2",
+          "mac": "aa:c1:ab:0c:ef:48",
+          "peer": "z"
+        },
+        "z": {
+          "node": "r3",
+          "interface": "eth1",
+          "mac": "aa:c1:ab:55:31:1c",
+          "peer": "a"
+        }
+      }
+    }
+  ]
+}

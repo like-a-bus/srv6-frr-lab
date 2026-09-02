@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Разворачивает SRv6-лабу на FRR и проверяет, что IPv4 ходит через SRv6-туннель.
-# Всё, что нужно, лежит рядом: топология и конфиги FRR.
+# Разворачивает SRv6-лабу на FRR: IS-IS в underlay, BGP L3VPN поверх него.
+# Две независимые VRF — RED и BLUE. Статических маршрутов и статических SID нет.
 #
 set -euo pipefail
 
@@ -49,53 +49,90 @@ grn "    ядро поддерживает SRv6, docker работает"
 info "Поднимаю лабу (первый запуск скачает образ FRR)"
 sudo containerlab deploy -t "$TOPO"
 
+# Ждём, пока IS-IS разнесёт локаторы: без этого BGP не разрешит next-hop.
 info "Жду сходимости IS-IS"
 for _ in $(seq 30); do
   if sudo docker exec $LAB-r1 ip -6 route show 2>/dev/null | grep -q '^fc00:3::/64.*eth1'; then
+    grn "    r1 видит локатор r3"
     break
   fi
   sleep 2
 done
 
-# FRR читает frr.conf при старте контейнера, когда IS-IS ещё не сошёлся,
-# и не может разрешить SID как next-hop — маршрут уходит в менеджмент-интерфейс.
-# Переустанавливаем политики после сходимости.
-info "Переустанавливаю SRv6-политики"
-sudo docker exec $LAB-r1 vtysh -c "configure terminal" \
-  -c "no ip route 10.0.3.1/32 fc00:3:0:0:100:: vrf vrf1 nexthop-vrf default segments fc00:3:0:0:100::" >/dev/null
-sudo docker exec $LAB-r3 vtysh -c "configure terminal" \
-  -c "no ip route 10.0.1.1/32 fc00:1:0:0:100:: vrf vrf1 nexthop-vrf default segments fc00:1:0:0:100::" >/dev/null
-sleep 1
-sudo docker exec $LAB-r1 vtysh -c "configure terminal" \
-  -c "ip route 10.0.3.1/32 fc00:3:0:0:100:: vrf vrf1 nexthop-vrf default segments fc00:3:0:0:100::" >/dev/null
-sudo docker exec $LAB-r3 vtysh -c "configure terminal" \
-  -c "ip route 10.0.1.1/32 fc00:1:0:0:100:: vrf vrf1 nexthop-vrf default segments fc00:1:0:0:100::" >/dev/null
-sleep 2
+# Сессия iBGP поднимается по loopback'ам, маршруты VPNv4 приезжают в VRF
+# с SRv6-инкапсуляцией. Никакой переустановки политик руками, как со статикой:
+# BGP сам переоценит next-hop, когда IS-IS сойдётся.
+info "Жду маршруты BGP L3VPN в VRF"
+ok=0
+for _ in $(seq 45); do
+  if sudo docker exec $LAB-r1 ip route show vrf RED  2>/dev/null | grep -q '10.0.3.1' &&
+     sudo docker exec $LAB-r1 ip route show vrf BLUE 2>/dev/null | grep -q '10.1.3.1' &&
+     sudo docker exec $LAB-r3 ip route show vrf RED  2>/dev/null | grep -q '10.0.1.1' &&
+     sudo docker exec $LAB-r3 ip route show vrf BLUE 2>/dev/null | grep -q '10.1.1.1'; then
+    ok=1
+    break
+  fi
+  sleep 2
+done
+
+if [ "$ok" -ne 1 ]; then
+  red "маршруты VPN не доехали"
+  echo "  sudo docker exec $LAB-r1 vtysh -c 'show bgp ipv4 vpn summary'"
+  echo "  sudo docker exec $LAB-r1 vtysh -c 'show bgp ipv4 vpn'"
+  exit 1
+fi
 
 # --- проверка ----------------------------------------------------------------
 
-info "Проверяю SID на r3"
+info "SID, выданные BGP на r1 (uDT4 на каждую VRF)"
+sudo docker exec $LAB-r1 vtysh -c "show segment-routing srv6 sid" || true
+
+info "SID в таблице ядра на r3"
 sudo docker exec $LAB-r3 ip -6 route show | grep seg6local || true
 
-info "Проверяю SRv6-политику на r1"
-sudo docker exec $LAB-r1 ip route show vrf vrf1 || true
+info "Маршруты в VRF RED на r1"
+sudo docker exec $LAB-r1 ip route show vrf RED || true
 
-info "Пингую 10.0.3.1 с r1 через SRv6"
-if sudo docker exec $LAB-r1 ip vrf exec vrf1 ping -c4 -I 10.0.1.1 10.0.3.1; then
-  echo
-  grn "Готово. IPv4 ходит внутри SRv6."
-  echo
-  echo "Посмотреть инкапсуляцию на транзитном узле:"
-  echo "  PID=\$(sudo docker inspect -f '{{.State.Pid}}' $LAB-r2)"
-  echo "  sudo nsenter -t \$PID -n tcpdump -ni eth1 -v 'ip6 proto 43'"
-  echo
-  echo "Погасить лабу:"
-  echo "  sudo containerlab destroy -t $TOPO"
-else
-  echo
-  red "Пинг не прошёл. Что посмотреть:"
+info "Маршруты в VRF BLUE на r1"
+sudo docker exec $LAB-r1 ip route show vrf BLUE || true
+
+hints() {
+  red "Пинг в VRF $1 не прошёл. Что посмотреть:"
   echo "  sudo docker exec $LAB-r1 vtysh -c 'show isis neighbor'"
+  echo "  sudo docker exec $LAB-r1 vtysh -c 'show bgp ipv4 vpn summary'"
+  echo "  sudo docker exec $LAB-r1 vtysh -c 'show bgp vrf $1 ipv4 unicast'"
   echo "  sudo docker exec $LAB-r3 ip -6 route show | grep seg6local"
   echo "  sudo docker logs $LAB-r1 2>&1 | tail -20"
   exit 1
+}
+
+info "Пингую 10.0.3.1 из RED"
+sudo docker exec $LAB-r1 ip vrf exec RED ping -c3 -I 10.0.1.1 10.0.3.1 || hints RED
+
+info "Пингую 10.1.3.1 из BLUE"
+sudo docker exec $LAB-r1 ip vrf exec BLUE ping -c3 -I 10.1.1.1 10.1.3.1 || hints BLUE
+
+# VRF изолированы: адрес чужой VRF не должен быть виден.
+info "Проверяю изоляцию: из RED адрес BLUE должен быть недоступен"
+if sudo docker exec $LAB-r1 ip vrf exec RED ping -c1 -W2 -I 10.0.1.1 10.1.3.1 >/dev/null 2>&1; then
+  red "трафик утёк между VRF — это ошибка конфигурации"
+  exit 1
 fi
+grn "    из RED в BLUE не проходит, как и должно быть"
+
+info "Проверяю изоляцию: из BLUE адрес RED должен быть недоступен"
+if sudo docker exec $LAB-r1 ip vrf exec BLUE ping -c1 -W2 -I 10.1.1.1 10.0.3.1 >/dev/null 2>&1; then
+  red "трафик утёк между VRF — это ошибка конфигурации"
+  exit 1
+fi
+grn "    из BLUE в RED не проходит, как и должно быть"
+
+echo
+grn "Готово. Две VRF ходят через SRv6, между собой не смешиваются."
+echo
+echo "Посмотреть инкапсуляцию на транзитном узле:"
+echo "  PID=\$(sudo docker inspect -f '{{.State.Pid}}' $LAB-r2)"
+echo "  sudo nsenter -t \$PID -n tcpdump -ni eth1 -v 'ip6 proto 43 or ip6 proto 4'"
+echo
+echo "Погасить лабу:"
+echo "  sudo containerlab destroy -t $TOPO"

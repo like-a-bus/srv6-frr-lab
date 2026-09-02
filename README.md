@@ -9,15 +9,31 @@
 r1 ---------------- r2 ---------------- r3
 ```
 
-| Узел | Loopback | Локатор | End.DT4 SID | IPv4 в VRF |
-| ---- | -------- | ------- | ----------- | ---------- |
-| r1 | `fc00::1/128` | `fc00:1::/64` | `fc00:1:0:0:100::` | `10.0.1.1/32` |
-| r2 | `fc00::2/128` | — | — | — |
-| r3 | `fc00::3/128` | `fc00:3::/64` | `fc00:3:0:0:100::` | `10.0.3.1/32` |
+Underlay — IS-IS: он разносит loopback'и и локаторы. Overlay — BGP L3VPN (VPNv4)
+поверх iBGP-сессии r1—r3, поднятой по loopback'ам. Статических маршрутов и
+статических SID в конфигурации нет: SID выдаёт BGP, префиксы разносит BGP.
 
-IS-IS раздаёт локаторы. На r1 и r3 — VRF с IPv4-адресом на dummy-интерфейсе и `End.DT4` SID. r2 про SRv6 ничего не знает, он доставляет пакет по внешнему IPv6-заголовку.
+r2 — чистый транзит: ни BGP, ни SRv6 он не знает, он доставляет пакет по
+внешнему IPv6-заголовку.
 
-IPv4-пакет с 10.0.1.1 на 10.0.3.1 инкапсулируется на r1 во внешний IPv6 с SRH, проходит r2 как обычный IPv6, на r3 распаковывается в VRF.
+| Узел | Loopback | Локатор | BGP |
+| ---- | -------- | ------- | --- |
+| r1 | `fc00::1/128` | `MAIN` = `fc00:1::/64` | AS 65000, сосед `fc00::3` |
+| r2 | `fc00::2/128` | — | — |
+| r3 | `fc00::3/128` | `MAIN` = `fc00:3::/64` | AS 65000, сосед `fc00::1` |
+
+Две независимые VRF. Трафик между ними не смешивается: разные таблицы ядра,
+разные RT, разные uDT4 SID.
+
+| VRF | Таблица | RD на r1 / r3 | RT | IPv4 на r1 | IPv4 на r3 |
+| --- | ------- | ------------- | -- | ---------- | ---------- |
+| RED | 100 | `1:100` / `3:100` | `65000:100` | `10.0.1.1/32` | `10.0.3.1/32` |
+| BLUE | 200 | `1:200` / `3:200` | `65000:200` | `10.1.1.1/32` | `10.1.3.1/32` |
+
+`sid vpn export auto` выдаёт каждой VRF свой uDT4 SID из локатора `MAIN`.
+IPv4-пакет из VRF инкапсулируется на r1 во внешний IPv6 с адресом назначения
+= SID нужной VRF на r3, проходит r2 как обычный IPv6 и на r3 распаковывается
+в ту VRF, которой принадлежит SID.
 
 ## 1. Containerlab
 
@@ -60,25 +76,39 @@ sudo containerlab destroy -t srv6-lab.clab.yml
 ## Проверка
 
 ```bash
+# SID, выданные BGP: по одному uDT4 на VRF
+sudo docker exec clab-srv6-lab-r1 vtysh -c "show segment-routing srv6 sid"
+
+# сессия VPNv4
+sudo docker exec clab-srv6-lab-r1 vtysh -c "show bgp ipv4 vpn summary"
+
+# что приехало по VPNv4
+sudo docker exec clab-srv6-lab-r1 vtysh -c "show bgp ipv4 vpn"
+
 # SID в таблице ядра, proto 196 — поставлен FRR
 sudo docker exec clab-srv6-lab-r3 ip -6 route show | grep seg6local
 
-# политика инкапсуляции
-sudo docker exec clab-srv6-lab-r1 ip route show vrf vrf1
+# маршруты и инкапсуляция в каждой VRF
+sudo docker exec clab-srv6-lab-r1 ip route show vrf RED
+sudo docker exec clab-srv6-lab-r1 ip route show vrf BLUE
 
 # трафик
-sudo docker exec clab-srv6-lab-r1 ip vrf exec vrf1 ping -c4 -I 10.0.1.1 10.0.3.1
+sudo docker exec clab-srv6-lab-r1 ip vrf exec RED  ping -c4 -I 10.0.1.1 10.0.3.1
+sudo docker exec clab-srv6-lab-r1 ip vrf exec BLUE ping -c4 -I 10.1.1.1 10.1.3.1
+
+# изоляция: из RED в BLUE ходить не должно
+sudo docker exec clab-srv6-lab-r1 ip vrf exec RED ping -c1 -W2 -I 10.0.1.1 10.1.3.1
 
 # инкапсуляция на проводе
 PID=$(sudo docker inspect -f '{{.State.Pid}}' clab-srv6-lab-r2)
-sudo nsenter -t $PID -n tcpdump -ni eth1 -v 'ip6 proto 43'
+sudo nsenter -t $PID -n tcpdump -ni eth1 -v 'ip6 proto 43 or ip6 proto 4'
 ```
 
-В дампе:
+В дампе видно два разных адреса назначения — по одному на VRF:
 
 ```
-IP6 fc00:12::1 > fc00:3:0:0:100:: RT6 (type=4, segleft=0, [0]fc00:3:0:0:100::)
-  IP 10.0.1.1 > 10.0.3.1: ICMP echo request
+IP6 fc00::1 > fc00:3:0:0:1::   IP 10.0.1.1 > 10.0.3.1: ICMP echo request
+IP6 fc00::1 > fc00:3:0:0:2::   IP 10.1.1.1 > 10.1.3.1: ICMP echo request
 ```
 
 ## Что неочевидно
@@ -91,9 +121,15 @@ IP6 fc00:12::1 > fc00:3:0:0:100:: RT6 (type=4, segleft=0, [0]fc00:3:0:0:100::)
 
 **`vtysh -b`.** FRR читает конфиг при старте контейнера, до того как Containerlab создаст VRF. Нужно перечитать после.
 
-**Переустановка политик.** Маршрут с `segments` применяется до сходимости IS-IS, SID не резолвится, и FRR направляет трафик в менеджмент-интерфейс. `setup.sh` ждёт локатор соседа и переустанавливает.
+**Имя VRF-интерфейса.** `ip link add RED type vrf` и `vrf RED` в конфиге FRR — одно и то же имя, иначе FRR не свяжет их и SID не установится.
 
 **`seg6_enabled`.** Включается на конкретном интерфейсе, значения `all` и `default` не наследуются интерфейсами, созданными после старта контейнера.
+
+**Переустановка политик больше не нужна.** Со статикой маршрут применялся до сходимости IS-IS, SID не резолвился, и трафик уходил в менеджмент-интерфейс. BGP сам переоценивает next-hop, когда локатор соседа появляется в таблице, — `setup.sh` просто ждёт маршруты в VRF.
+
+**Один SID на VRF, а не на пару.** `sid vpn export auto` под `address-family ipv4 unicast` даёт uDT4 на VRF. Если нужен один SID на IPv4 и IPv6 сразу — это `sid vpn per-vrf export auto` и поведение uDT46.
+
+**RD и RT — разные вещи.** RD у каждой пары «роутер + VRF» свой (`1:100`, `3:100`), он только различает префиксы в общей VPNv4-таблице. Кто с кем обменивается маршрутами, решает RT: RED видит только `65000:100`, BLUE — только `65000:200`. Это и есть изоляция на уровне control plane.
 
 ## WSL2
 

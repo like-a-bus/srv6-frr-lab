@@ -19,12 +19,18 @@ topology:
       exec:
         - sysctl -qw net.vrf.strict_mode=1
         - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
-        - ip link add vrf1 type vrf table 100
-        - ip link set vrf1 up
-        - ip link add lo1 type dummy
-        - ip link set lo1 master vrf1
-        - ip link set lo1 up
-        - ip addr add 10.0.1.1/32 dev lo1
+        - ip link add RED type vrf table 100
+        - ip link set RED up
+        - ip link add BLUE type vrf table 200
+        - ip link set BLUE up
+        - ip link add lo-red type dummy
+        - ip link set lo-red master RED
+        - ip link set lo-red up
+        - ip addr add 10.0.1.1/32 dev lo-red
+        - ip link add lo-blue type dummy
+        - ip link set lo-blue master BLUE
+        - ip link set lo-blue up
+        - ip addr add 10.1.1.1/32 dev lo-blue
         - vtysh -b
 
     r2:
@@ -41,12 +47,18 @@ topology:
       exec:
         - sysctl -qw net.vrf.strict_mode=1
         - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
-        - ip link add vrf1 type vrf table 100
-        - ip link set vrf1 up
-        - ip link add lo1 type dummy
-        - ip link set lo1 master vrf1
-        - ip link set lo1 up
-        - ip addr add 10.0.3.1/32 dev lo1
+        - ip link add RED type vrf table 100
+        - ip link set RED up
+        - ip link add BLUE type vrf table 200
+        - ip link set BLUE up
+        - ip link add lo-red type dummy
+        - ip link set lo-red master RED
+        - ip link set lo-red up
+        - ip addr add 10.0.3.1/32 dev lo-red
+        - ip link add lo-blue type dummy
+        - ip link set lo-blue master BLUE
+        - ip link set lo-blue up
+        - ip addr add 10.1.3.1/32 dev lo-blue
         - vtysh -b
 
   links:
