@@ -1,0 +1,158 @@
+name: srv6-lab2
+
+topology:
+  defaults:
+    kind: linux
+    image: quay.io/frrouting/frr:10.7.1
+    sysctls:
+      net.ipv6.conf.all.forwarding: 1
+      net.ipv4.conf.all.forwarding: 1
+      net.ipv6.conf.all.seg6_enabled: 1
+      net.ipv6.conf.default.seg6_enabled: 1
+
+  nodes:
+    p1:
+      binds:
+        - p1/daemons:/etc/frr/daemons
+        - p1/frr.conf:/etc/frr/frr.conf
+        - p1/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth2.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth3.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth4.seg6_enabled=1
+        - vtysh -b
+
+    p2:
+      binds:
+        - p2/daemons:/etc/frr/daemons
+        - p2/frr.conf:/etc/frr/frr.conf
+        - p2/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth2.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth3.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth4.seg6_enabled=1
+        - vtysh -b
+
+    p3:
+      binds:
+        - p3/daemons:/etc/frr/daemons
+        - p3/frr.conf:/etc/frr/frr.conf
+        - p3/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth2.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth3.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth4.seg6_enabled=1
+        - vtysh -b
+
+    p4:
+      binds:
+        - p4/daemons:/etc/frr/daemons
+        - p4/frr.conf:/etc/frr/frr.conf
+        - p4/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth2.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth3.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth4.seg6_enabled=1
+        - vtysh -b
+
+    pe1:
+      binds:
+        - pe1/daemons:/etc/frr/daemons
+        - pe1/frr.conf:/etc/frr/frr.conf
+        - pe1/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - sysctl -qw net.vrf.strict_mode=1
+        - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth2.seg6_enabled=1
+        - ip link add RED type vrf table 100
+        - ip link set RED up
+        - ip link set eth3 master RED
+        - ip link set eth3 up
+        - ip addr add 192.168.11.2/30 dev eth3
+        - vtysh -b
+
+    pe2:
+      binds:
+        - pe2/daemons:/etc/frr/daemons
+        - pe2/frr.conf:/etc/frr/frr.conf
+        - pe2/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - sysctl -qw net.vrf.strict_mode=1
+        - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth2.seg6_enabled=1
+        - ip link add RED type vrf table 100
+        - ip link set RED up
+        - ip link set eth3 master RED
+        - ip link set eth3 up
+        - ip addr add 192.168.12.2/30 dev eth3
+        - vtysh -b
+
+    pe3:
+      binds:
+        - pe3/daemons:/etc/frr/daemons
+        - pe3/frr.conf:/etc/frr/frr.conf
+        - pe3/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - sysctl -qw net.vrf.strict_mode=1
+        - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth2.seg6_enabled=1
+        - ip link add RED type vrf table 100
+        - ip link set RED up
+        - ip link set eth3 master RED
+        - ip link set eth3 up
+        - ip addr add 192.168.23.2/30 dev eth3
+        - vtysh -b
+
+    pe4:
+      binds:
+        - pe4/daemons:/etc/frr/daemons
+        - pe4/frr.conf:/etc/frr/frr.conf
+        - pe4/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - sysctl -qw net.vrf.strict_mode=1
+        - sysctl -qw net.ipv6.conf.eth1.seg6_enabled=1
+        - sysctl -qw net.ipv6.conf.eth2.seg6_enabled=1
+        - ip link add RED type vrf table 100
+        - ip link set RED up
+        - ip link set eth3 master RED
+        - ip link set eth3 up
+        - ip addr add 192.168.24.2/30 dev eth3
+        - vtysh -b
+
+    ce1:
+      binds:
+        - ce1/daemons:/etc/frr/daemons
+        - ce1/frr.conf:/etc/frr/frr.conf
+        - ce1/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - vtysh -b
+
+    ce2:
+      binds:
+        - ce2/daemons:/etc/frr/daemons
+        - ce2/frr.conf:/etc/frr/frr.conf
+        - ce2/vtysh.conf:/etc/frr/vtysh.conf
+      exec:
+        - vtysh -b
+
+  links:
+    - endpoints: ["pe1:eth1", "p1:eth1"]
+    - endpoints: ["pe1:eth2", "p2:eth1"]
+    - endpoints: ["pe2:eth1", "p1:eth2"]
+    - endpoints: ["pe2:eth2", "p2:eth2"]
+    - endpoints: ["pe3:eth1", "p3:eth1"]
+    - endpoints: ["pe3:eth2", "p4:eth1"]
+    - endpoints: ["pe4:eth1", "p3:eth2"]
+    - endpoints: ["pe4:eth2", "p4:eth2"]
+    - endpoints: ["p1:eth3", "p3:eth3"]
+    - endpoints: ["p2:eth3", "p4:eth3"]
+    - endpoints: ["p1:eth4", "p2:eth4"]
+    - endpoints: ["p3:eth4", "p4:eth4"]
+    - endpoints: ["ce1:eth1", "pe1:eth3"]
+    - endpoints: ["ce1:eth2", "pe2:eth3"]
+    - endpoints: ["ce2:eth1", "pe3:eth3"]
+    - endpoints: ["ce2:eth2", "pe4:eth3"]
