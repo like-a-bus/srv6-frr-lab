@@ -135,16 +135,24 @@ IP6 fc00::1 > fc00:3:0:0:2::   IP 10.1.1.1 > 10.1.3.1: ICMP echo request
 
 Ядро от Microsoft собрано без `CONFIG_LWTUNNEL`.
 
-Ветка исходников выбирается по текущему `uname -r`: для `5.15.x` — `linux-msft-wsl-5.15.y`, для `6.6.x` — `linux-msft-wsl-6.6.y`.
+Ветки исходников: `linux-msft-wsl-5.15.y`, `linux-msft-wsl-6.6.y` (LTS) и
+`linux-msft-wsl-6.18.y` (текущая). Список актуальных —
+`git ls-remote --heads https://github.com/microsoft/WSL2-Linux-Kernel.git`.
+
+Для лабы `basic` подойдёт любая. Для управления трафиком в `te` нужна **6.18**:
+до ядра 6.17 End.X с link-local next-hop не работает, подробности
+в [te/README.md](../te/README.md).
 
 ```bash
 sudo apt install -y build-essential flex bison libssl-dev libelf-dev \
                     bc dwarves cpio pahole git
 
-git clone --depth 1 -b linux-msft-wsl-6.6.y \
+git clone --depth 1 -b linux-msft-wsl-6.18.y \
     https://github.com/microsoft/WSL2-Linux-Kernel.git
 cd WSL2-Linux-Kernel
-cp Microsoft/config-wsl .config
+
+# в свежих ветках конфиг переехал, в старых лежит по обоим путям
+cp arch/x86/configs/config-wsl .config    # или Microsoft/config-wsl
 
 scripts/config --enable CONFIG_LWTUNNEL
 scripts/config --enable CONFIG_IPV6_SEG6_LWTUNNEL
@@ -159,6 +167,16 @@ sudo depmod -a
 cp arch/x86/boot/bzImage /mnt/c/Users/ИМЯ/bzImage-srv6
 ```
 
+Клонировать и собирать в домашнем каталоге Linux, не в `/mnt/c`: на смонтированном
+диске сборка идёт в разы дольше. Готовый `bzImage` копируется на `C:` уже в конце.
+
+Перед сборкой стоит убедиться, что опции действительно встали, — `olddefconfig`
+может их потерять:
+
+```bash
+grep -E "LWTUNNEL|SEG6|NET_VRF|CONFIG_DUMMY" .config
+```
+
 `C:\Users\ИМЯ\.wslconfig`:
 
 ```ini
@@ -168,7 +186,13 @@ kernel=C:\\Users\\ИМЯ\\bzImage-srv6
 
 Двойные слеши обязательны. Дальше `wsl --shutdown` в PowerShell и заход заново, в `uname -r` появится `+`.
 
-Меняется только ядро, файловая система и пакеты остаются на месте. Откат — убрать строку `kernel=` и снова `wsl --shutdown`.
+Меняется только ядро, файловая система и пакеты остаются на месте. Откат — убрать строку `kernel=` и снова `wsl --shutdown`. Старые образы удобно держать рядом
+под разными именами: переключение сводится к правке одной строки.
+
+После смены ядра docker может потребовать ручной загрузки модулей netfilter
+(`nft_compat`, `iptable_nat`, `bridge` и прочие), если в новом конфиге они
+собраны модулями. Список фиксируется в `/etc/modules-load.d/docker-srv6.conf`.
+На 6.18 нужное вкомпилировано, и docker поднимается без этого.
 
 ### Возможные проблемы
 
