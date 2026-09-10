@@ -78,19 +78,36 @@ for _ in $(seq 45); do
 done
 [ "${e:-0}" -ge 24 ] || red "    рёбер в TED: ${e:-0} из 24, BGP-LS отдаст неполный граф"
 
-# bgpd забирает у isisd полную топологию только в момент активации link-state.
-# При старте контейнера это происходит раньше, чем isisd готов отвечать: запрос
-# теряется, и таблица BGP-LS остаётся пустой навсегда. mpls-te export повторно
-# базу не шлёт. Переактивация соседа ctrl после сборки TED повторяет запрос.
-# Снятие и активация — два разных вызова vtysh, иначе транзакция схлопнется.
-info "Переактивирую BGP-LS на рефлекторах, чтобы bgpd забрал топологию"
+# BGP-LS из isisd в bgpd идёт через zebra, и зарегистрироваться там должны обе
+# стороны: isisd как производитель (mpls-te export), bgpd как потребитель
+# (активация link-state). При старте контейнера любая регистрация может
+# потеряться, и в каждом деплое проигрывает свой рефлектор. Полную базу bgpd
+# получает только в момент активации, повторно её никто не шлёт.
+# Поэтому по порядку: переключить экспорт, переактивировать соседа ctrl,
+# проверить собственную таблицу рефлектора. Каждое снятие и включение —
+# отдельный вызов vtysh, иначе транзакция схлопнется в ноль.
+info "Перерегистрирую BGP-LS на рефлекторах, чтобы bgpd забрал топологию"
+rib() { ex "$1" vtysh -c "show bgp summary" 2>/dev/null \
+  | awk '/Link-State Link-State Summary/{f=1} f && /RIB entries/{sub(",", "", $3); print $3; exit}' || true; }
 for x in "p1 d" "p3 e"; do
   set -- $x
-  ex $1 vtysh -c "conf t" -c "router bgp 65000" -c "address-family link-state link-state" \
-    -c "no neighbor fc00:0:$2::2 activate" -c "end" >/dev/null
-  sleep 2
-  ex $1 vtysh -c "conf t" -c "router bgp 65000" -c "address-family link-state link-state" \
-    -c "neighbor fc00:0:$2::2 activate" -c "end" >/dev/null
+  r=0
+  for try in 1 2 3; do
+    ex $1 vtysh -c "conf t" -c "router isis 1" -c "no mpls-te export" -c "end" >/dev/null
+    sleep 2
+    ex $1 vtysh -c "conf t" -c "router isis 1" -c "mpls-te export" -c "end" >/dev/null
+    sleep 2
+    ex $1 vtysh -c "conf t" -c "router bgp 65000" -c "address-family link-state link-state" \
+      -c "no neighbor fc00:0:$2::2 activate" -c "end" >/dev/null
+    sleep 2
+    ex $1 vtysh -c "conf t" -c "router bgp 65000" -c "address-family link-state link-state" \
+      -c "neighbor fc00:0:$2::2 activate" -c "end" >/dev/null
+    for _ in $(seq 10); do
+      r=$(rib $1); [ "${r:-0}" -ge 80 ] && break; sleep 1
+    done
+    [ "${r:-0}" -ge 80 ] && { grn "    $1: 80 NLRI, попытка $try"; break; }
+  done
+  [ "${r:-0}" -ge 80 ] || red "    $1: в таблице BGP-LS ${r:-0} из 80 после трёх попыток"
 done
 
 # 8 узлов + 24 линка + 40 префиксов + 8 SRv6 SID = 80 NLRI от каждого рефлектора.
