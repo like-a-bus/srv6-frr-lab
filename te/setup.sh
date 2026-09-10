@@ -43,6 +43,41 @@ for _ in $(seq 45); do
   sleep 2
 done
 
+# isisd заполняет TE-адрес интерфейса только по событию "адрес добавлен".
+# Если адрес появился на интерфейсе раньше, чем включился mpls-te, в LSP нет
+# Local Interface IPv6 Address, и TED не может собрать ребро: у него нет ключа.
+# Какие адреса успевают, а какие нет, решает гонка при старте, по интерфейсам.
+# Снимаем и возвращаем адреса линков, чтобы событие гарантированно дошло.
+# Снятие и возврат — два разных вызова vtysh: в одном транзакция схлопнется
+# в ноль. Соседства IS-IS держатся на link-local, BGP ходит по loopback'ам.
+info "Переустанавливаю адреса линков, чтобы TED собрала рёбра"
+for n in p1 p2 p3 p4 pe1 pe2 pe3 pe4; do
+  L=$(ex $n vtysh -c "show running-config" \
+      | awk '/^interface /{i=$2} /^ ipv6 address /{if (i != "lo") print i" "$3}' || true)
+  [ -n "$L" ] || continue
+  D=(-c "conf t"); U=(-c "conf t")
+  while read -r i a; do
+    D+=(-c "interface $i" -c "no ipv6 address $a" -c "exit")
+    U+=(-c "interface $i" -c "ipv6 address $a" -c "exit")
+  done <<< "$L"
+  ex $n vtysh "${D[@]}" -c "end" >/dev/null
+  sleep 2
+  ex $n vtysh "${U[@]}" -c "end" >/dev/null
+done
+
+# 12 линков в ядре, в TED каждое направление — отдельное ребро.
+# isisd придерживает повторную генерацию LSP после серии изменений,
+# поэтому рёбра появляются не сразу — ждём с запасом.
+info "Жду рёбер в TED"
+e=0; t0=$SECONDS
+for _ in $(seq 45); do
+  e=$(ex p1 vtysh -c "show isis mpls-te database detail" 2>/dev/null \
+      | sed -nE 's/.*Vertices, ([0-9]+) Edges.*/\1/p' || true)
+  [ "${e:-0}" -ge 24 ] && { grn "    24 ребра за $((SECONDS - t0)) с, топология для BGP-LS полная"; break; }
+  sleep 2
+done
+[ "${e:-0}" -ge 24 ] || red "    рёбер в TED: ${e:-0} из 24, BGP-LS отдаст неполный граф"
+
 info "Жду сессии BGP до рефлекторов"
 for _ in $(seq 45); do
   up=0
