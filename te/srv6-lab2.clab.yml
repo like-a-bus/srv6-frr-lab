@@ -139,6 +139,18 @@ topology:
       exec:
         - vtysh -b
 
+    ctrl:
+      binds:
+        - ctrl/daemons:/etc/frr/daemons
+        - ctrl/frr.conf:/etc/frr/frr.conf
+        - ctrl/vtysh.conf:/etc/frr/vtysh.conf
+        - ctrl/app:/opt/ctrl
+        - /var/run/docker.sock:/var/run/docker.sock
+      ports:
+        - 8080:8080
+      exec:
+        - vtysh -b
+
   links:
     - endpoints: ["pe1:eth1", "p1:eth1"]
     - endpoints: ["pe1:eth2", "p2:eth1"]
@@ -156,3 +168,5 @@ topology:
     - endpoints: ["ce1:eth2", "pe2:eth3"]
     - endpoints: ["ce2:eth1", "pe3:eth3"]
     - endpoints: ["ce2:eth2", "pe4:eth3"]
+    - endpoints: ["p1:eth5", "ctrl:eth1"]
+    - endpoints: ["p3:eth5", "ctrl:eth2"]

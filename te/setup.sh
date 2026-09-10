@@ -53,7 +53,7 @@ done
 info "Переустанавливаю адреса линков, чтобы TED собрала рёбра"
 for n in p1 p2 p3 p4 pe1 pe2 pe3 pe4; do
   L=$(ex $n vtysh -c "show running-config" \
-      | awk '/^interface /{i=$2} /^ ipv6 address /{if (i != "lo") print i" "$3}' || true)
+      | awk '/^interface /{i=$2; a=""} /^ ipv6 address /{a=$3} /^ ipv6 router isis/{if (i != "lo" && a != "") print i" "a}' || true)
   [ -n "$L" ] || continue
   D=(-c "conf t"); U=(-c "conf t")
   while read -r i a; do
@@ -77,6 +77,32 @@ for _ in $(seq 45); do
   sleep 2
 done
 [ "${e:-0}" -ge 24 ] || red "    рёбер в TED: ${e:-0} из 24, BGP-LS отдаст неполный граф"
+
+# bgpd забирает у isisd полную топологию только в момент активации link-state.
+# При старте контейнера это происходит раньше, чем isisd готов отвечать: запрос
+# теряется, и таблица BGP-LS остаётся пустой навсегда. mpls-te export повторно
+# базу не шлёт. Переактивация соседа ctrl после сборки TED повторяет запрос.
+# Снятие и активация — два разных вызова vtysh, иначе транзакция схлопнется.
+info "Переактивирую BGP-LS на рефлекторах, чтобы bgpd забрал топологию"
+for x in "p1 d" "p3 e"; do
+  set -- $x
+  ex $1 vtysh -c "conf t" -c "router bgp 65000" -c "address-family link-state link-state" \
+    -c "no neighbor fc00:0:$2::2 activate" -c "end" >/dev/null
+  sleep 2
+  ex $1 vtysh -c "conf t" -c "router bgp 65000" -c "address-family link-state link-state" \
+    -c "neighbor fc00:0:$2::2 activate" -c "end" >/dev/null
+done
+
+# 8 узлов + 24 линка + 40 префиксов + 8 SRv6 SID = 80 NLRI от каждого рефлектора.
+info "Жду топологию на ctrl"
+ls=0
+for _ in $(seq 30); do
+  ls=$(ex ctrl vtysh -c "show bgp summary" 2>/dev/null \
+    | awk '/Link-State Link-State Summary/{f=1} f && /^fc00:0:/ && $10 ~ /^[0-9]+$/ {s+=$10} END {print s+0}' || true)
+  [ "${ls:-0}" -ge 160 ] && { grn "    ctrl получил по 80 NLRI от p1 и p3"; break; }
+  sleep 2
+done
+[ "${ls:-0}" -ge 160 ] || red "    NLRI BGP-LS на ctrl: ${ls:-0} из 160, контроллер увидит неполную топологию"
 
 info "Жду сессии BGP до рефлекторов"
 for _ in $(seq 45); do
