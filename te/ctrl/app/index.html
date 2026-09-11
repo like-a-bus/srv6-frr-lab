@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Явные пути SRv6, лаба te</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #EEF1F2;
+    --sheet: #FFFFFF;
+    --ink: #16222E;
+    --muted: #5B6773;
+    --rule: #D3DADF;
+    --lane: #A3ADB6;
+    --pe: #1F5FA8;
+    --path: #E0661B;
+    --path-ink: #A8480D;
+    --ok: #2F7D4F;
+    --err: #B3261E;
+    --sans: "Barlow", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 400 16px/1.45 var(--sans); }
+  button, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--pe); outline-offset: 2px; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+           padding: 20px 28px 12px; }
+  h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
+  #status { margin: 0; color: var(--muted); }
+  #status.bad { color: var(--err); }
+
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; padding: 0 28px 28px; align-items: start; }
+  .left { display: grid; gap: 20px; min-width: 0; }
+
+  .map { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 8px 8px 4px; }
+  .map svg { display: block; width: 100%; height: auto; }
+  .map .hint { margin: 0 12px 8px; color: var(--muted); font-size: 14px; }
+
+  .lane .hit { stroke: transparent; stroke-width: 16; cursor: pointer; }
+  .lane .stroke { stroke: var(--lane); stroke-width: 2; pointer-events: none; }
+  .lane:hover .stroke, .lane:focus-visible .stroke { stroke: var(--ink); stroke-width: 2.5; }
+  .lane:focus { outline: none; }
+  .lane.on .stroke { stroke: var(--path); stroke-width: 3.5; stroke-dasharray: 10 6; animation: flow 0.9s linear infinite; }
+  .lane .badge circle { fill: var(--path); }
+  .lane .badge text { fill: #fff; font: 600 12px var(--sans); text-anchor: middle; dominant-baseline: central; }
+  @keyframes flow { to { stroke-dashoffset: -16; } }
+  @media (prefers-reduced-motion: reduce) { .lane.on .stroke { animation: none; stroke-dasharray: none; } }
+
+  .node text { fill: #fff; font: 600 15px var(--sans); text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+  .node.pe rect { fill: var(--pe); }
+  .node.p circle { fill: var(--ink); }
+  .node.egress rect { stroke: var(--path); stroke-width: 3; }
+  .node.ingress rect { stroke: var(--ink); stroke-width: 3; }
+
+  aside { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; }
+  aside section { padding: 16px 18px; border-top: 1px solid var(--rule); }
+  aside section:first-child { border-top: 0; }
+  h2 { margin: 0 0 10px; font-size: 17px; font-weight: 600; }
+
+  .row { display: flex; gap: 8px; }
+  input[type=text] { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--rule); border-radius: 6px;
+                     font-family: var(--mono); font-size: 14px; background: var(--paper); }
+  button { padding: 7px 12px; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--ink); }
+  button:disabled { cursor: default; opacity: 0.5; }
+  button.primary { width: 100%; padding: 10px; margin-top: 12px; border: 0; background: var(--path); color: #fff; font-weight: 600; font-size: 17px; }
+  button.primary:hover:not(:disabled) { background: var(--path-ink); }
+  button.quiet { border-color: transparent; color: var(--muted); padding: 4px 6px; }
+
+  .mono { font-family: var(--mono); font-size: 13px; }
+  .muted { color: var(--muted); }
+  .hint { color: var(--muted); font-size: 14px; margin: 6px 0 0; }
+  .error { color: var(--err); font-size: 14px; margin: 8px 0 0; }
+
+  .choice { display: flex; align-items: baseline; gap: 10px; padding: 5px 0; cursor: pointer; }
+  .choice input { margin: 0; accent-color: var(--path); }
+  .choice.disabled { cursor: default; color: var(--muted); }
+
+  ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  ol.steps li { display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 2px 8px; padding: 4px 0; }
+  ol.steps li.step::before { counter-increment: step; content: counter(step); width: 22px; height: 22px; border-radius: 50%;
+                             background: var(--path); color: #fff; font-weight: 600; font-size: 12px;
+                             display: grid; place-items: center; grid-row: span 2; }
+  ol.steps li .hop { font-weight: 500; }
+  ol.steps li .sid { grid-column: 2; }
+  ol.steps li button { grid-row: 1 / span 2; grid-column: 3; }
+  ol.steps li.gap { display: block; padding: 2px 0 2px 34px; color: var(--muted); font-size: 14px; }
+
+  .seglist { margin: 0; padding: 0; list-style: none; }
+  .seglist li { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border-bottom: 1px dashed var(--rule); }
+  .seglist li:last-child { border-bottom: 0; }
+
+  .result { margin-top: 10px; padding-left: 10px; border-left: 3px solid var(--ok); }
+  .result.fail { border-left-color: var(--err); }
+  .result strong { font-weight: 600; }
+  .result details { margin-top: 4px; font-size: 14px; }
+  .result pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-all; }
+
+  .routes { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 18px; }
+  .routes-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .routes-head h2 { margin: 0; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 14px; padding: 6px 8px; border-bottom: 1px solid var(--rule); }
+  td { padding: 8px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.actions { white-space: nowrap; text-align: right; }
+  td .seg { display: block; }
+
+  @media (max-width: 1000px) {
+    main { grid-template-columns: 1fr; padding: 0 12px 20px; }
+    header { padding: 16px 12px 10px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Явные пути через ядро</h1>
+  <p id="status">Читаю топологию из BGP-LS…</p>
+</header>
+
+<main>
+  <div class="left">
+    <div class="map">
+      <svg id="map" viewBox="0 0 900 500" role="group" aria-label="Схема ядра"></svg>
+      <p class="hint">Клик по стрелке добавляет шаг в конец пути, повторный клик убирает. У каждого направления линка свой End.X.</p>
+    </div>
+
+    <section class="routes">
+      <div class="routes-head">
+        <h2>TE-маршруты на PE</h2>
+        <button id="reload" class="quiet">Обновить</button>
+      </div>
+      <table>
+        <thead><tr><th>PE</th><th>Префикс</th><th>Сегменты</th><th></th></tr></thead>
+        <tbody id="routes"><tr><td colspan="4" class="muted">Загружаю…</td></tr></tbody>
+      </table>
+    </section>
+  </div>
+
+  <aside>
+    <section>
+      <h2>Префикс</h2>
+      <form id="prefix-form" class="row">
+        <input id="prefix" type="text" placeholder="10.2.0.1/32" spellcheck="false" autocomplete="off" aria-label="Префикс VPNv4">
+        <button type="submit">Найти выходы</button>
+      </form>
+      <div id="egress"></div>
+    </section>
+
+    <section>
+      <h2>Путь</h2>
+      <ol id="steps" class="steps"></ol>
+      <p id="steps-empty" class="hint">Выберите линки на схеме по порядку.</p>
+      <button id="clear" class="quiet" hidden>Очистить путь</button>
+    </section>
+
+    <section>
+      <h2>Входные PE</h2>
+      <div id="ingress" class="muted">Появятся после загрузки топологии.</div>
+    </section>
+
+    <section>
+      <h2>Сеглист</h2>
+      <ul id="seglist" class="seglist"></ul>
+      <p id="missing" class="hint"></p>
+      <button id="commit" class="primary" disabled>Commit</button>
+      <div id="results"></div>
+    </section>
+  </aside>
+</main>
+
+<script>
+const LAYOUT = {
+  pe1: [90, 110], pe2: [90, 390], p1: [330, 110], p2: [330, 390],
+  p3: [570, 110], p4: [570, 390], pe3: [810, 110], pe4: [810, 390],
+};
+const R = 32, LANE = 7, NS = "http://www.w3.org/2000/svg";
+
+const state = { topo: null, path: [], prefix: "", options: [], egress: null, ingress: new Set(), busy: false };
+const $ = (s) => document.querySelector(s);
+
+function el(tag, attrs = {}, ...kids) {
+  const svgTags = ["svg", "g", "line", "circle", "rect", "text", "title", "path", "marker", "defs"];
+  const e = svgTags.includes(tag) ? document.createElementNS(NS, tag) : document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === false || v == null) continue;
+    if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null) e.append(kid);
+  return e;
+}
+
+async function api(url, body) {
+  const opts = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {};
+  const resp = await fetch(url, opts);
+  const data = await resp.json().catch(() => ({ error: `Ответ сервера не JSON (HTTP ${resp.status})` }));
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  return data;
+}
+
+const linkById = (id) => state.topo.links.find((l) => l.id === id);
+const peNames = () => state.topo.nodes.filter((n) => n.pe).map((n) => n.name);
+const egressOption = () => state.options.find((o) => o.pe === state.egress);
+
+function positions() {
+  const pos = {}, free = [];
+  for (const n of state.topo.nodes) (LAYOUT[n.name] ? (pos[n.id] = LAYOUT[n.name]) : free.push(n));
+  free.forEach((n, i) => {
+    const a = (2 * Math.PI * i) / free.length;
+    pos[n.id] = [450 + 180 * Math.cos(a), 250 + 180 * Math.sin(a)];
+  });
+  return pos;
+}
+
+function renderMap() {
+  const svg = $("#map");
+  svg.replaceChildren(el("defs", {},
+    el("marker", { id: "arrow", viewBox: "0 0 10 10", refX: 8, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto" },
+      el("path", { d: "M0,0 L10,5 L0,10 z", fill: "#A3ADB6" })),
+    el("marker", { id: "arrow-on", viewBox: "0 0 10 10", refX: 8, refY: 5, markerWidth: 5, markerHeight: 5, orient: "auto" },
+      el("path", { d: "M0,0 L10,5 L0,10 z", fill: "#E0661B" }))));
+  if (!state.topo) return;
+  const pos = positions();
+  const lanes = el("g"), badges = el("g"), nodes = el("g");
+
+  for (const l of state.topo.links) {
+    const a = pos[l.src], b = pos[l.dst];
+    if (!a || !b) continue;
+    const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy), ux = dx / len, uy = dy / len;
+    const nx = -uy * LANE, ny = ux * LANE;
+    const x1 = a[0] + ux * (R + 2) + nx, y1 = a[1] + uy * (R + 2) + ny;
+    const x2 = b[0] - ux * (R + 6) + nx, y2 = b[1] - uy * (R + 6) + ny;
+    const idx = state.path.indexOf(l.id), on = idx >= 0;
+    const label = `${l.srcName} → ${l.dstName}, End.X ${l.sid || "нет"}`;
+    const toggle = () => { on ? state.path.splice(idx, 1) : state.path.push(l.id); render(); };
+    lanes.append(el("g", {
+      class: on ? "lane on" : "lane", tabindex: 0, role: "button", "aria-pressed": on, "aria-label": label,
+      onclick: toggle, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } },
+    },
+      el("title", {}, label),
+      el("line", { class: "hit", x1, y1, x2, y2 }),
+      el("line", { class: "stroke", x1, y1, x2, y2, "marker-end": on ? "url(#arrow-on)" : "url(#arrow)" })));
+    if (on) {
+      const t = 0.62, bx = x1 + (x2 - x1) * t + nx * 1.6, by = y1 + (y2 - y1) * t + ny * 1.6;
+      badges.append(el("g", { class: "lane badge" },
+        el("circle", { cx: bx, cy: by, r: 10 }), el("text", { x: bx, y: by }, String(idx + 1))));
+    }
+  }
+
+  for (const n of state.topo.nodes) {
+    const [x, y] = pos[n.id];
+    const cls = ["node", n.pe ? "pe" : "p", n.name === state.egress && "egress", state.ingress.has(n.name) && "ingress"]
+      .filter(Boolean).join(" ");
+    const shape = n.pe
+      ? el("rect", { x: x - 32, y: y - 22, width: 64, height: 44, rx: 6 })
+      : el("circle", { cx: x, cy: y, r: 27 });
+    nodes.append(el("g", { class: cls }, el("title", {}, `${n.name} (${n.id})`), shape, el("text", { x, y }, n.name)));
+  }
+  svg.append(lanes, badges, nodes);
+}
+
+function renderSteps() {
+  const ol = $("#steps");
+  ol.replaceChildren();
+  let prev = null;
+  state.path.forEach((id, i) => {
+    const l = linkById(id);
+    if (prev && prev.dst !== l.src) ol.append(el("li", { class: "gap" }, `дальше до ${l.srcName} по IGP`));
+    ol.append(el("li", { class: "step" },
+      el("span", { class: "hop" }, `${l.srcName} → ${l.dstName}`),
+      el("button", { class: "quiet", "aria-label": `Убрать шаг ${i + 1}`, onclick: () => { state.path.splice(i, 1); render(); } }, "Убрать"),
+      el("span", { class: "sid mono muted" }, l.sid || "нет End.X")));
+    prev = l;
+  });
+  $("#steps-empty").hidden = state.path.length > 0;
+  $("#clear").hidden = state.path.length === 0;
+}
+
+function renderEgress() {
+  const box = $("#egress");
+  box.replaceChildren();
+  if (!state.prefix) return;
+  if (!state.options.length) {
+    box.append(el("p", { class: "error" }, `${state.prefix} никто не анонсирует в VPNv4. Проверьте маску: маршруты от CE обычно /32.`));
+    return;
+  }
+  box.append(el("p", { class: "hint" }, "Выходной PE, на котором пакет распакуется в VRF:"));
+  for (const o of state.options) {
+    box.append(el("label", { class: "choice" },
+      el("input", { type: "radio", name: "egress", value: o.pe, checked: o.pe === state.egress,
+        onchange: () => { state.egress = o.pe; state.ingress.delete(o.pe); render(); } }),
+      el("span", {}, o.pe), el("span", { class: "mono muted" }, o.sid)));
+  }
+}
+
+function renderIngress() {
+  const box = $("#ingress");
+  if (!state.topo) return;
+  box.classList.remove("muted");
+  box.replaceChildren();
+  for (const pe of peNames()) {
+    const isEgress = pe === state.egress;
+    box.append(el("label", { class: isEgress ? "choice disabled" : "choice" },
+      el("input", { type: "checkbox", value: pe, checked: state.ingress.has(pe), disabled: isEgress,
+        onchange: (e) => { e.target.checked ? state.ingress.add(pe) : state.ingress.delete(pe); render(); } }),
+      el("span", {}, pe), isEgress ? el("span", { class: "muted" }, "выход") : null));
+  }
+}
+
+function renderSeglist() {
+  const ul = $("#seglist");
+  ul.replaceChildren();
+  for (const id of state.path) {
+    const l = linkById(id);
+    ul.append(el("li", {}, el("span", { class: "mono" }, l.sid || "?"), el("span", { class: "muted" }, `End.X ${l.srcName} → ${l.dstName}`)));
+  }
+  const eg = egressOption();
+  if (eg) ul.append(el("li", {}, el("span", { class: "mono" }, eg.sid), el("span", { class: "muted" }, `End.DT4 на ${eg.pe}`)));
+
+  const missing = [];
+  if (!state.prefix || !state.options.length) missing.push("префикс");
+  else if (!eg) missing.push("выходной PE");
+  if (!state.path.length) missing.push("хотя бы один линк");
+  if (!state.ingress.size) missing.push("входные PE");
+  $("#missing").textContent = missing.length ? `Для commit не хватает: ${missing.join(", ")}.` : "";
+  const btn = $("#commit");
+  btn.disabled = missing.length > 0 || state.busy;
+  btn.textContent = state.busy ? "Раскатываю…" : state.ingress.size ? `Commit на ${[...state.ingress].sort().join(", ")}` : "Commit";
+}
+
+function render() { renderMap(); renderSteps(); renderEgress(); renderIngress(); renderSeglist(); }
+
+function showResults(results, title) {
+  const box = $("#results");
+  box.replaceChildren(el("p", { class: "hint" }, title));
+  for (const r of results) {
+    const details = [];
+    if (r.commands.length) details.push(r.commands.join("\n"));
+    if (r.vtysh) details.push(r.vtysh);
+    if (r.kernel) details.push(`ядро: ${r.kernel}`);
+    box.append(el("div", { class: r.ok ? "result" : "result fail" },
+      el("div", {}, el("strong", {}, r.pe), ` ${r.message}`),
+      details.length ? el("details", {}, el("summary", {}, "Команды и ядро"), el("pre", { class: "mono" }, details.join("\n\n"))) : null));
+  }
+}
+
+function showError(err) {
+  $("#results").replaceChildren(el("p", { class: "error" }, err.message));
+}
+
+async function loadRoutes() {
+  const tbody = $("#routes");
+  try {
+    const data = await api("/api/routes");
+    const rows = data.routes.flatMap((x) => x.routes.map((r) => ({ pe: x.pe, ...r })));
+    tbody.replaceChildren();
+    if (!rows.length) {
+      tbody.append(el("tr", {}, el("td", { colspan: 4, class: "muted" }, "TE-маршрутов нет, весь трафик идёт по BGP.")));
+      return;
+    }
+    for (const r of rows) {
+      tbody.append(el("tr", {},
+        el("td", {}, r.pe),
+        el("td", { class: "mono" }, r.prefix),
+        el("td", { class: "mono" }, r.segments.map((s) => el("span", { class: "seg" }, s))),
+        el("td", { class: "actions" },
+          el("button", { class: "quiet", onclick: () => showOnMap(r) }, "На схему"),
+          el("button", { onclick: () => removeRoute(r) }, "Снять"))));
+    }
+  } catch (err) {
+    tbody.replaceChildren(el("tr", {}, el("td", { colspan: 4, class: "error" }, err.message)));
+  }
+}
+
+function showOnMap(route) {
+  const ids = [];
+  for (const sid of route.segments.slice(0, -1)) {
+    const l = state.topo.links.find((x) => x.sid === sid);
+    if (!l) { showError(new Error(`Сида ${sid} нет среди End.X текущей топологии: маршрут ставили до передеплоя.`)); return; }
+    ids.push(l.id);
+  }
+  state.path = ids;
+  state.ingress = new Set([route.pe]);
+  $("#prefix").value = route.prefix;
+  findEgress(route.prefix, route.segments.at(-1));
+}
+
+async function findEgress(prefix, preferSid) {
+  $("#results").replaceChildren();
+  try {
+    const data = await api(`/api/egress?prefix=${encodeURIComponent(prefix)}`);
+    state.prefix = data.prefix;
+    state.options = data.options;
+    const keep = data.options.find((o) => o.sid === preferSid) || data.options.find((o) => o.pe === state.egress);
+    state.egress = keep ? keep.pe : data.options.length === 1 ? data.options[0].pe : null;
+    if (state.egress) state.ingress.delete(state.egress);
+  } catch (err) {
+    state.prefix = ""; state.options = []; state.egress = null;
+    $("#egress").replaceChildren(el("p", { class: "error" }, err.message));
+    renderSeglist();
+    return;
+  }
+  render();
+}
+
+async function removeRoute(route) {
+  try {
+    const data = await api("/api/remove", { pe: route.pe, prefix: route.prefix });
+    showResults(data.results, `Снятие ${route.prefix} с ${route.pe}`);
+  } catch (err) { showError(err); }
+  loadRoutes();
+}
+
+async function commit() {
+  state.busy = true; renderSeglist();
+  try {
+    const data = await api("/api/commit", {
+      prefix: state.prefix, egress: state.egress, ingress: [...state.ingress].sort(), path: state.path,
+    });
+    showResults(data.results, `Commit ${data.prefix}: ${data.segments.length} сегмента`);
+  } catch (err) { showError(err); }
+  state.busy = false; renderSeglist();
+  loadRoutes();
+}
+
+$("#prefix-form").addEventListener("submit", (e) => { e.preventDefault(); findEgress($("#prefix").value); });
+$("#clear").addEventListener("click", () => { state.path = []; render(); });
+$("#commit").addEventListener("click", commit);
+$("#reload").addEventListener("click", loadRoutes);
+
+(async () => {
+  try {
+    state.topo = await api("/api/topology");
+    const status = $("#status");
+    if (!state.topo.links.length) {
+      status.textContent = "Топология пуста: BGP-LS на ctrl ещё не заполнен. Дождитесь конца setup.sh и обновите страницу.";
+      status.className = "bad";
+    } else {
+      status.textContent = `Из BGP-LS: ${state.topo.nodes.length} узлов, ${state.topo.links.length} направлений линков`;
+    }
+  } catch (err) {
+    $("#status").textContent = err.message;
+    $("#status").className = "bad";
+  }
+  render();
+  loadRoutes();
+})();
+</script>
+</body>
+</html>

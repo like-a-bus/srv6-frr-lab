@@ -150,6 +150,7 @@ topology:
         - 8080:8080
       exec:
         - vtysh -b
+        - sh -c "setsid python3 /opt/ctrl/ctrl.py >/opt/ctrl/ctrl.log 2>&1 &"
 
   links:
     - endpoints: ["pe1:eth1", "p1:eth1"]

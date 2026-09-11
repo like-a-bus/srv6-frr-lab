@@ -1,3 +1,4 @@
 te/clab-srv6-lab2/
 te/pcap/
 *.pcap
+te/ctrl/app/ctrl.log
