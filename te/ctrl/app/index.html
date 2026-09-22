@@ -20,6 +20,7 @@
     --path-ink: #A8480D;
     --ok: #2F7D4F;
     --err: #B3261E;
+    --load: #0F8B7F;
     --sans: "Barlow", system-ui, sans-serif;
     --mono: "JetBrains Mono", ui-monospace, monospace;
   }
@@ -40,12 +41,19 @@
   .map { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 8px 8px 4px; }
   .map svg { display: block; width: 100%; height: auto; }
   .map .hint { margin: 0 12px 8px; color: var(--muted); font-size: 14px; }
+  .map .hint.load-status { color: var(--load); }
+  .map .hint.load-status.bad { color: var(--err); }
 
   .lane .hit { stroke: transparent; stroke-width: 16; cursor: pointer; }
   .lane .stroke { stroke: var(--lane); stroke-width: 2; pointer-events: none; }
   .lane:hover .stroke, .lane:focus-visible .stroke { stroke: var(--ink); stroke-width: 2.5; }
   .lane:focus { outline: none; }
   .lane.on .stroke { stroke: var(--path); stroke-width: 3.5; stroke-dasharray: 10 6; animation: flow 0.9s linear infinite; }
+  .lane .load { stroke: var(--load); stroke-linecap: round; opacity: 0; pointer-events: none;
+                transition: stroke-width 0.4s, opacity 0.4s; }
+  .lane .load.busy { opacity: 0.55; }
+  .rate { font: 500 11px var(--mono); fill: var(--load); text-anchor: middle; dominant-baseline: central;
+          pointer-events: none; paint-order: stroke; stroke: var(--sheet); stroke-width: 3px; }
   .lane .badge circle { fill: var(--path); }
   .lane .badge text { fill: #fff; font: 600 12px var(--sans); text-anchor: middle; dominant-baseline: central; }
   @keyframes flow { to { stroke-dashoffset: -16; } }
@@ -128,6 +136,7 @@
     <div class="map">
       <svg id="map" viewBox="0 0 900 500" role="group" aria-label="Схема ядра"></svg>
       <p class="hint">Клик по стрелке добавляет шаг в конец пути, повторный клик убирает. У каждого направления линка свой End.X.</p>
+      <p id="load-status" class="hint load-status">Нагрузка по линкам: жду данных от сборщика…</p>
     </div>
 
     <section class="routes">
@@ -146,7 +155,7 @@
     <section>
       <h2>Префикс</h2>
       <form id="prefix-form" class="row">
-        <input id="prefix" type="text" placeholder="10.2.0.1/32" spellcheck="false" autocomplete="off" aria-label="Префикс VPNv4">
+        <input id="prefix" type="text" placeholder="10.2.0.0/24" spellcheck="false" autocomplete="off" aria-label="Префикс VPNv4">
         <button type="submit">Найти выходы</button>
       </form>
       <div id="egress"></div>
@@ -181,7 +190,10 @@ const LAYOUT = {
 };
 const R = 32, LANE = 7, NS = "http://www.w3.org/2000/svg";
 
-const state = { topo: null, path: [], prefix: "", options: [], egress: null, ingress: new Set(), busy: false };
+const state = { topo: null, path: [], prefix: "", options: [], egress: null, ingress: new Set(), busy: false,
+                load: {}, loadEls: {} };
+const LOAD_IDLE = 100e3;   // бит/с: ниже — служебный трафик IGP и BGP, линк считаем пустым
+const LOAD_POLL = 1000;
 const $ = (s) => document.querySelector(s);
 
 function el(tag, attrs = {}, ...kids) {
@@ -227,7 +239,8 @@ function renderMap() {
       el("path", { d: "M0,0 L10,5 L0,10 z", fill: "#E0661B" }))));
   if (!state.topo) return;
   const pos = positions();
-  const lanes = el("g"), badges = el("g"), nodes = el("g");
+  const lanes = el("g"), badges = el("g"), nodes = el("g"), rates = el("g");
+  state.loadEls = {};
 
   for (const l of state.topo.links) {
     const a = pos[l.src], b = pos[l.dst];
@@ -239,12 +252,19 @@ function renderMap() {
     const idx = state.path.indexOf(l.id), on = idx >= 0;
     const label = `${l.srcName} → ${l.dstName}, End.X ${l.sid || "нет"}`;
     const toggle = () => { on ? state.path.splice(idx, 1) : state.path.push(l.id); render(); };
+    const key = `${l.srcName}>${l.dstName}`;
+    const load = el("line", { class: "load", x1, y1, x2, y2 });
+    const tx = x1 + (x2 - x1) * 0.3 + nx * 2.4, ty = y1 + (y2 - y1) * 0.3 + ny * 2.4;
+    const rate = el("text", { class: "rate", x: tx, y: ty });
+    state.loadEls[key] = { load, rate };
+    rates.append(rate);
     lanes.append(el("g", {
       class: on ? "lane on" : "lane", tabindex: 0, role: "button", "aria-pressed": on, "aria-label": label,
       onclick: toggle, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } },
     },
       el("title", {}, label),
       el("line", { class: "hit", x1, y1, x2, y2 }),
+      load,
       el("line", { class: "stroke", x1, y1, x2, y2, "marker-end": on ? "url(#arrow-on)" : "url(#arrow)" })));
     if (on) {
       const t = 0.62, bx = x1 + (x2 - x1) * t + nx * 1.6, by = y1 + (y2 - y1) * t + ny * 1.6;
@@ -262,7 +282,54 @@ function renderMap() {
       : el("circle", { cx: x, cy: y, r: 27 });
     nodes.append(el("g", { class: cls }, el("title", {}, `${n.name} (${n.id})`), shape, el("text", { x, y }, n.name)));
   }
-  svg.append(lanes, badges, nodes);
+  svg.append(lanes, badges, nodes, rates);
+  paintLoad();
+}
+
+// --- нагрузка по линкам --------------------------------------------------
+
+function fmtRate(bps) {
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(2)}G`;
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(bps >= 1e8 ? 0 : 1)}M`;
+  return `${Math.round(bps / 1e3)}k`;
+}
+
+function fmtRateLong(bps) {
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(2)} Гбит/с`;
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} Мбит/с`;
+  return `${Math.round(bps / 1e3)} кбит/с`;
+}
+
+function paintLoad() {
+  for (const [key, { load, rate }] of Object.entries(state.loadEls)) {
+    const bps = state.load[key] || 0;
+    const busy = bps >= LOAD_IDLE;
+    const width = busy ? Math.min(11, 3 + 2.2 * Math.log10(bps / LOAD_IDLE)) : 0;
+    load.setAttribute("class", busy ? "load busy" : "load");
+    load.style.strokeWidth = `${width}px`;
+    rate.textContent = busy ? fmtRate(bps) : "";
+  }
+}
+
+async function pollLoad() {
+  const status = $("#load-status");
+  try {
+    const data = await api("/api/load");
+    state.load = data.links;
+    const busy = Object.entries(data.links).filter(([k, v]) => v >= LOAD_IDLE && state.loadEls[k])
+      .sort((a, b) => b[1] - a[1]);
+    const t = new Date(data.time * 1000).toLocaleTimeString("ru-RU");
+    status.textContent = busy.length
+      ? `Нагрузка по линкам на ${t}. Больше всего: ${busy[0][0].replace(">", " → ")}, ${fmtRateLong(busy[0][1])}`
+      : `Нагрузка по линкам на ${t}: ядро пустое, трафика нет.`;
+    status.className = "hint load-status";
+  } catch (err) {
+    state.load = {};
+    status.textContent = `Нагрузка по линкам недоступна: ${err.message}`;
+    status.className = "hint load-status bad";
+  }
+  paintLoad();
+  setTimeout(pollLoad, LOAD_POLL);
 }
 
 function renderSteps() {
@@ -287,7 +354,7 @@ function renderEgress() {
   box.replaceChildren();
   if (!state.prefix) return;
   if (!state.options.length) {
-    box.append(el("p", { class: "error" }, `${state.prefix} никто не анонсирует в VPNv4. Проверьте маску: маршруты от CE обычно /32.`));
+    box.append(el("p", { class: "error" }, `${state.prefix} никто не анонсирует в VPNv4. Проверьте маску: сети хостов за CE — /24.`));
     return;
   }
   box.append(el("p", { class: "hint" }, "Выходной PE, на котором пакет распакуется в VRF:"));
@@ -450,6 +517,7 @@ $("#reload").addEventListener("click", loadRoutes);
   }
   render();
   loadRoutes();
+  pollLoad();
 })();
 </script>
 </body>

@@ -1,0 +1,15 @@
+# VictoriaMetrics понимает PromQL, поэтому подключается как Prometheus.
+# timeInterval — частота опроса сборщика: от неё Grafana считает $__rate_interval
+# и не даёт шагу запроса стать мельче точек в базе.
+apiVersion: 1
+datasources:
+  - name: VictoriaMetrics
+    uid: vm
+    type: prometheus
+    access: proxy
+    url: http://clab-srv6-lab2-vm:8428
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 20ms
+      httpMethod: POST

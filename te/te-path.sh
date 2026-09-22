@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Ставит на PE1 явный путь до 10.2.0.1/32 через заданные транзитные узлы.
+# Ставит на PE1 явный путь до сети h2 (10.2.0.0/24) через заданные транзитные узлы.
 #
 # Номера функций End.X isisd выдаёт в порядке подъёма соседств, поэтому между
 # передеплоями они меняются. Скрипт каждый раз собирает сеглист заново:
@@ -14,7 +14,7 @@ LAB="${LAB:-clab-srv6-lab2}"
 PATH_NODES="${PATH_NODES:-p1 p2 p4 p3}"   # транзит, по порядку
 INGRESS="${INGRESS:-pe1}"                 # где ставим маршрут
 EGRESS="${EGRESS:-pe3}"                   # чей DT4-сид последний
-PREFIX="${PREFIX:-10.2.0.1/32}"
+PREFIX="${PREFIX:-10.2.0.0/24}"
 VRF="${VRF:-RED}"
 OIF="${OIF:-eth3}"                        # интерфейс в той же VRF
 
@@ -63,7 +63,7 @@ ex "$INGRESS" vtysh -c "conf t" \
    -c "ip route $PREFIX $OIF segments $LIST vrf $VRF"
 
 inf "Проверяю"
-ex "$INGRESS" ip route show vrf "$VRF" "${PREFIX%/*}" || true
+ex "$INGRESS" ip route show vrf "$VRF" "$PREFIX" || true
 
 echo
 grn "Готово. Путь задан, но пинг сам по себе его не подтверждает —"

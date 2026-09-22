@@ -9,6 +9,9 @@
 Топология читается один раз, при первом запросе, и дальше не обновляется:
 перезапуск процесса и есть обновление. Пустую топологию не запоминаем, чтобы
 не застрять на ней, если страницу открыли до конца setup.sh.
+
+Загрузка линков для схемы берётся у сборщика (te/monitoring/collector.py):
+скорость передачи с интерфейса узла в сторону соседа за последнюю секунду.
 """
 import http.client
 import http.server
@@ -22,6 +25,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -30,6 +35,7 @@ VRF = os.environ.get("CTRL_VRF", "RED")
 IFACE = os.environ.get("CTRL_IFACE", "eth3")  # интерфейс PE в VRF, см. NOTES.md
 PE_RE = re.compile(os.environ.get("CTRL_PE_RE", r"^pe\d+$"))
 PORT = int(os.environ.get("CTRL_PORT", "8080"))
+COLLECTOR_URL = os.environ.get("CTRL_COLLECTOR", f"http://{LAB}-collector:9100")
 DOCKER_SOCK = "/var/run/docker.sock"
 HERE = Path(__file__).resolve().parent
 
@@ -119,7 +125,7 @@ def parse_prefix(text):
     try:
         return str(ipaddress.IPv4Network((text or "").strip(), strict=True))
     except ValueError:
-        raise ApiError("Нужна IPv4-сеть без хостовых битов, например 10.2.0.1/32")
+        raise ApiError("Нужна IPv4-сеть без хостовых битов, например 10.2.0.0/24")
 
 
 def egress_options(prefix):
@@ -143,6 +149,16 @@ def egress_options(prefix):
             if pe and pe not in found:
                 found[pe] = {"pe": pe, "sid": str(addr), "rd": rd}
     return sorted(found.values(), key=lambda o: o["pe"])
+
+
+def link_load():
+    """{"узел>сосед": бит/с} — ключ совпадает с srcName>dstName линка на схеме."""
+    try:
+        with urllib.request.urlopen(f"{COLLECTOR_URL}/rates", timeout=3) as resp:
+            data = json.load(resp)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise ApiError(f"сборщик не отвечает ({COLLECTOR_URL}): {e}")
+    return {"time": data.get("time") or time.time(), "links": data.get("links") or {}}
 
 
 # --- выполнение на PE через Docker API --------------------------------------
@@ -333,6 +349,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "srv6-ctrl"
 
     def log_message(self, fmt, *args):
+        if self.path.startswith("/api/load"):
+            return  # схема опрашивает раз в секунду, лог бы только рос
         sys.stderr.write(f"{self.address_string()} {fmt % args}\n")
 
     def send_body(self, code, data, ctype):
@@ -367,6 +385,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 prefix = parse_prefix(query.get("prefix", [""])[0])
                 return {"prefix": prefix, "options": egress_options(prefix)}
             self.handle_api(egress)
+        elif url.path == "/api/load":
+            self.handle_api(link_load)
         elif url.path == "/api/routes":
             self.handle_api(lambda: {"routes": [{"pe": pe, "routes": pe_te_routes(pe)}
                                                 for pe in pe_names()]})
@@ -390,8 +410,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(404, {"error": "Нет такого адреса"})
 
 
+class DualStackServer(http.server.ThreadingHTTPServer):
+    """Слушает и IPv4, и IPv6. Docker DNS отдаёт имя контейнера с AAAA, curl localhost
+    идёт на ::1, и сокет только на IPv4 даёт им Connection refused / reset."""
+    address_family = socket.AF_INET6
+    daemon_threads = True
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
+def make_server(port, handler):
+    """Двухстековый сервер, а где IPv6 выключен — обычный IPv4."""
+    try:
+        return DualStackServer(("::", port), handler)
+    except OSError:
+        server = http.server.ThreadingHTTPServer(("", port), handler)
+        server.daemon_threads = True
+        return server
+
+
 def main():
-    server = http.server.ThreadingHTTPServer(("", PORT), Handler)
+    server = make_server(PORT, Handler)
     print(f"srv6-ctrl слушает :{PORT}, лаба {LAB}, VRF {VRF}", file=sys.stderr, flush=True)
     server.serve_forever()
 

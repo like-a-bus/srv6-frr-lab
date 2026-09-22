@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# srv6-lab2: 2 CE, 4 PE, 4 P.
+# srv6-lab2: 2 хоста, 2 CE, 4 PE, 4 P, контроллер и мониторинг.
 # IS-IS в underlay на всех восьми узлах ядра, BGP L3VPN поверх,
-# два route reflector'а на P1 и P3, CE подключены к двум PE каждый.
-# Статических маршрутов нет.
+# два route reflector'а на P1 и P3, CE подключены к двум PE каждый,
+# за каждым CE по хосту с iperf3. Статических маршрутов на роутерах нет.
+# Сборщик пишет счётчики интерфейсов в VictoriaMetrics, графики в Grafana.
 #
 set -euo pipefail
 
@@ -33,8 +34,36 @@ fi
 sudo ip -6 route del fc00:9::1/128
 grn "    ядро поддерживает SRv6"
 
-info "Поднимаю лабу — 10 узлов, это дольше, чем в первой"
+# Каталог данных VictoriaMetrics: bind-mount, должен существовать до деплоя.
+# Лежит вне контейнера, поэтому destroy его не трогает.
+mkdir -p monitoring/data
+
+info "Поднимаю лабу: ядро, CE, хосты, контроллер и мониторинг"
 sudo containerlab deploy -t "$TOPO"
+
+# vtysh -b в exec может отработать раньше, чем bgpd готов принять SRv6-локатор:
+# "Failure to communicate[13] to bgpd, line: locator MAIN". Тогда VRF RED
+# остаётся без DT4-сида и в VPN ничего не экспортируется. Чем больше узлов
+# стартует разом, тем чаще. Признак успеха — End.DT4 в таблице SID.
+info "Проверяю, что BGP-конфиг PE применился"
+for pe in pe1 pe2 pe3 pe4; do
+  n=0
+  until ex "$pe" vtysh -c "show segment-routing srv6 sid" 2>/dev/null | grep -q 'End.DT4'; do
+    n=$((n + 1))
+    if [ "$n" -gt 8 ]; then
+      red "    $pe: нет End.DT4, повторить руками: sudo docker exec $LAB-$pe vtysh -b"
+      break
+    fi
+    # перечитываем на каждой второй попытке: сид появляется не мгновенно
+    [ $((n % 2)) -eq 1 ] && { ex "$pe" vtysh -b >/dev/null 2>&1 || true; }
+    sleep 3
+  done
+  if [ "$n" -eq 0 ]; then
+    grn "    $pe: конфиг на месте"
+  elif [ "$n" -le 8 ]; then
+    grn "    $pe: конфиг перечитан, End.DT4 появился"
+  fi
+done
 
 info "Жду сходимости IS-IS"
 for _ in $(seq 45); do
@@ -141,18 +170,18 @@ for pe in pe1 pe2 pe3 pe4; do
   ex $pe vtysh -c "clear bgp vrf RED ipv4 unicast *" >/dev/null 2>&1 || true
 done
 
-info "Жду маршруты CE в VRF на дальней стороне"
+info "Жду сети хостов в VRF на дальней стороне"
 ok=0
 for _ in $(seq 45); do
-  if ex pe1 ip route show vrf RED 2>/dev/null | grep -q '10.2.0.1' &&
-     ex pe3 ip route show vrf RED 2>/dev/null | grep -q '10.1.0.1'; then
+  if ex pe1 ip route show vrf RED 2>/dev/null | grep -q '10.2.0.0/24' &&
+     ex pe3 ip route show vrf RED 2>/dev/null | grep -q '10.1.0.0/24'; then
     ok=1; break
   fi
   sleep 2
 done
 [ "$ok" -eq 1 ] || { red "VPN-маршруты не доехали"
   echo "  sudo docker exec $LAB-pe1 vtysh -c 'show bgp vrf RED ipv4 unicast'"
-  echo "  sudo docker exec $LAB-pe1 vtysh -c 'show bgp ipv4 vpn 10.1.0.1/32'"
+  echo "  sudo docker exec $LAB-pe1 vtysh -c 'show bgp ipv4 vpn 10.1.0.0/24'"
   echo "  sudo docker exec $LAB-p1  vtysh -c 'show bgp ipv4 vpn'"; exit 1; }
 
 info "Рефлектор P1: маршруты VPNv4, при том что ни одной VRF у него нет"
@@ -164,19 +193,51 @@ ex p1 ip -6 route show | grep seg6local || true
 info "SID на PE3 — End.DT4 для RED"
 ex pe3 vtysh -c "show segment-routing srv6 sid" || true
 
-info "Маршрут CE2 в VRF RED на PE1: две записи, dual-homing active/active"
+info "Сеть h2 в VRF RED на PE1: две записи, dual-homing active/active"
 ex pe1 ip route show vrf RED || true
 
 info "Тот же префикс глазами BGP — два пути с разными RD"
-ex pe1 vtysh -c "show bgp vrf RED ipv4 unicast 10.2.0.1/32" || true
+ex pe1 vtysh -c "show bgp vrf RED ipv4 unicast 10.2.0.0/24" || true
 
-info "CE1 -> CE2"
-ex ce1 ping -c3 -I 10.1.0.1 10.2.0.1
+info "H1 -> H2"
+ex h1 ping -c3 10.2.0.2
 
-info "CE1 видит префикс через оба PE"
-ex ce1 vtysh -c "show ip route 10.2.0.1/32" || true
+info "CE1 видит сеть h2 через оба PE"
+ex ce1 vtysh -c "show ip route 10.2.0.0/24" || true
+
+# Новые серии VictoriaMetrics показывает в запросах с задержкой в несколько
+# секунд, Grafana при первом старте накатывает миграции базы — ждём обоих.
+info "Проверяю мониторинг"
+series=0
+for _ in $(seq 30); do
+  series=$(curl -sf --data-urlencode 'query=count(lab_if_tx_bytes_total)' \
+             http://localhost:8428/api/v1/query 2>/dev/null \
+           | sed -nE 's/.*"value":\[[^,]+,"([0-9]+)".*/\1/p' || true)
+  [ "${series:-0}" -gt 0 ] && { grn "    VictoriaMetrics: $series интерфейсов со счётчиками"; break; }
+  sleep 2
+done
+[ "${series:-0}" -gt 0 ] || red "    в VictoriaMetrics нет данных, смотреть te/monitoring/collector/collector.log"
+if curl -sf http://localhost:8080/api/load 2>/dev/null | grep -q '"links"'; then
+  grn "    схема в контроллере получает нагрузку от сборщика"
+else
+  red "    контроллер не получает нагрузку, смотреть te/monitoring/collector/collector.log"
+fi
+gok=0
+for _ in $(seq 30); do
+  curl -sf http://localhost:3000/api/health 2>/dev/null | grep -q '"database": *"ok"' && { gok=1; break; }
+  sleep 2
+done
+[ "$gok" -eq 1 ] && grn "    Grafana отвечает" || red "    Grafana не поднялась: sudo docker logs $LAB-grafana"
 
 echo
-grn "Готово. 10 узлов, 8 iBGP к рефлекторам, 4 eBGP до CE, трафик через SRv6."
+grn "Готово. 8 узлов ядра, 8 iBGP к рефлекторам, 4 eBGP до CE, трафик через SRv6."
+echo
+echo "Контроллер: http://localhost:8080"
+echo "Grafana:    http://localhost:3000"
+echo
+echo "iperf3, сервер (отдельный терминал, потери по интервалам видны здесь):"
+echo "  sudo docker exec -it $LAB-h2 iperf3 -s -i 0.1"
+echo "iperf3, клиент (UDP 100 Мбит/с, 60 с):"
+echo "  sudo docker exec -it $LAB-h1 iperf3 -c 10.2.0.2 -u -b 100M -t 60 -i 0.1"
 echo
 echo "Погасить:  sudo containerlab destroy -t $TOPO"

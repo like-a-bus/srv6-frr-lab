@@ -5,7 +5,7 @@
 set -u
 
 LAB="${LAB:-clab-srv6-lab2}"
-NODES=${NODES:-"ce1 pe1 pe2 p1 p2 p3 p4 pe3 pe4 ce2"}
+NODES=${NODES:-"h1 ce1 pe1 pe2 p1 p2 p3 p4 pe3 pe4 ce2 h2"}
 DIR="${DIR:-$(cd "$(dirname "$0")" && pwd)/pcap}"
 WIN=${WIN:-/mnt/c/Users/Admin/pcap}
 COUNT=${COUNT:-5}
@@ -31,8 +31,8 @@ echo "    интерфейсов под захватом: $STARTED"
 
 sleep 3
 
-echo "==> Пинг CE1 -> CE2"
-sudo docker exec "$LAB-ce1" ping -c "$COUNT" -i 0.5 -I 10.1.0.1 10.2.0.1
+echo "==> Пинг H1 -> H2"
+sudo docker exec "$LAB-h1" ping -c "$COUNT" -i 0.5 10.2.0.2
 
 sleep 2
 sudo pkill -f "tcpdump -ni" >/dev/null 2>&1

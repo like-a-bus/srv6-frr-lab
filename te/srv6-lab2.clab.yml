@@ -9,6 +9,8 @@ topology:
       net.ipv4.conf.all.forwarding: 1
       net.ipv6.conf.all.seg6_enabled: 1
       net.ipv6.conf.default.seg6_enabled: 1
+      # ECMP по L4-хэшу: потоки iperf -P расходятся по обоим PE, а не идут одним путём
+      net.ipv4.fib_multipath_hash_policy: 1
 
   nodes:
     p1:
@@ -139,6 +141,24 @@ topology:
       exec:
         - vtysh -b
 
+    # Хосты за CE: источник и приёмник трафика для iperf3.
+    # MTU 1500, как у обычного хоста: с запасом под SRv6-инкапсуляцию в ядре (9500).
+    h1:
+      image: nicolaka/netshoot:v0.16
+      cmd: sleep infinity
+      exec:
+        - ip link set eth1 mtu 1500
+        - ip addr add 10.1.0.2/24 dev eth1
+        - ip route replace default via 10.1.0.1 dev eth1
+
+    h2:
+      image: nicolaka/netshoot:v0.16
+      cmd: sleep infinity
+      exec:
+        - ip link set eth1 mtu 1500
+        - ip addr add 10.2.0.2/24 dev eth1
+        - ip route replace default via 10.2.0.1 dev eth1
+
     ctrl:
       binds:
         - ctrl/daemons:/etc/frr/daemons
@@ -151,6 +171,49 @@ topology:
       exec:
         - vtysh -b
         - sh -c "setsid python3 /opt/ctrl/ctrl.py >/opt/ctrl/ctrl.log 2>&1 &"
+
+    # Мониторинг: сборщик счётчиков -> VictoriaMetrics -> Grafana.
+    # В сети лабы их нет, они только в менеджмент-сети containerlab.
+
+    # Образ FRR ради Python 3.12; FRR в нём не настраивается и не нужен.
+    # Хостовый /proc нужен, чтобы читать /proc/<PID>/net/dev других контейнеров.
+    collector:
+      binds:
+        - monitoring/collector:/opt/mon
+        - srv6-lab2.clab.yml:/opt/topology.clab.yml:ro
+        - /proc:/host/proc:ro
+        - /var/run/docker.sock:/var/run/docker.sock
+      env:
+        MON_TOPO: /opt/topology.clab.yml
+      exec:
+        - sh -c "setsid python3 -u /opt/mon/collector.py >/opt/mon/collector.log 2>&1 &"
+
+    # Данные в te/monitoring/data (в .gitignore), destroy их не стирает.
+    vm:
+      image: victoriametrics/victoria-metrics:v1.152.0
+      # -enableTCP6: без него VictoriaMetrics слушает только IPv4, а curl localhost идёт на ::1
+      cmd: -storageDataPath=/storage -retentionPeriod=7d -search.latencyOffset=1s -search.disableCache -enableTCP6
+      binds:
+        - monitoring/data:/storage
+      ports:
+        - 8428:8428
+
+    grafana:
+      image: grafana/grafana:13.2.2
+      binds:
+        - monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+        - monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      env:
+        GF_AUTH_ANONYMOUS_ENABLED: "true"
+        GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+        GF_AUTH_DISABLE_LOGIN_FORM: "true"
+        GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 1s
+        GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/lab.json
+        GF_ANALYTICS_REPORTING_ENABLED: "false"
+        GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+        GF_NEWS_NEWS_FEED_ENABLED: "false"
+      ports:
+        - 3000:3000
 
   links:
     - endpoints: ["pe1:eth1", "p1:eth1"]
@@ -169,5 +232,7 @@ topology:
     - endpoints: ["ce1:eth2", "pe2:eth3"]
     - endpoints: ["ce2:eth1", "pe3:eth3"]
     - endpoints: ["ce2:eth2", "pe4:eth3"]
+    - endpoints: ["ce1:eth3", "h1:eth1"]
+    - endpoints: ["ce2:eth3", "h2:eth1"]
     - endpoints: ["p1:eth5", "ctrl:eth1"]
     - endpoints: ["p3:eth5", "ctrl:eth2"]
