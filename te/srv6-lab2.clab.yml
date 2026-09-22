@@ -11,6 +11,12 @@ topology:
       net.ipv6.conf.default.seg6_enabled: 1
       # ECMP по L4-хэшу: потоки iperf -P расходятся по обоим PE, а не идут одним путём
       net.ipv4.fib_multipath_hash_policy: 1
+      # Во внешнем IPv6-заголовке портов нет, за ними SRH, поэтому в ядре все потоки
+      # для транзитных P выглядят одинаково. seg6_flowlabel=1 заставляет узел,
+      # который инкапсулирует, считать flow label из внутреннего пакета: у разных
+      # потоков внешние заголовки становятся разными, и P их разводят. Это замена
+      # entropy label из MPLS.
+      net.ipv6.seg6_flowlabel: 1
 
   nodes:
     p1:

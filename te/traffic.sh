@@ -6,7 +6,9 @@
 #   bash te/traffic.sh status   идёт ли трафик, последние интервалы
 #   bash te/traffic.sh log      интервалы сервера по 100 мс в реальном времени, выход Ctrl+C
 #
-# Параметры переменными: RATE=200M, PROTO=tcp (тогда STREAMS потоков, по умолчанию 4).
+# Параметры переменными: RATE=200M (суммарно), PROTO=tcp, STREAMS=1 (по умолчанию 4).
+# Несколько потоков нужны, чтобы трафик разошёлся по ECMP: у них разные порты,
+# а значит, разный хэш на CE и на PE и разный flow label во внешнем заголовке.
 # Оба iperf3 работают внутри контейнеров (docker exec -d), терминал не занимают.
 # Лог сервера — /tmp/iperf-server.log внутри h2, потери по интервалам смотреть там.
 
@@ -46,10 +48,13 @@ case "${1:-}" in
     sleep 1
     if [ "$PROTO" = tcp ]; then
       args=(-P "$STREAMS")
-      what="TCP, $STREAMS потока"
+      what="TCP, потоков: $STREAMS"
     else
-      args=(-u -b "$RATE")
-      what="UDP $RATE"
+      # -b в iperf3 задаётся на поток, а RATE у нас суммарный: делим
+      num=${RATE%[KMGkmg]}
+      suf=${RATE#$num}
+      args=(-u -b "$(awk -v n="$num" -v s="$STREAMS" 'BEGIN{printf "%.4g", n/s}')$suf" -P "$STREAMS")
+      what="UDP $RATE, потоков: $STREAMS"
     fi
     sudo docker exec -d "$LAB-h1" iperf3 -c "$DST" -t 0 -i 1 "${args[@]}" --forceflush --logfile "$CLOG"
     sleep 2

@@ -1,7 +1,7 @@
 {
   "uid": "srv6-lab",
   "title": "SRv6 лаба: трафик по интерфейсам",
-  "description": "Счётчики /proc/net/dev всех узлов лабы, опрос раз в 20 мс. Сборщик: te/monitoring/collector.py.",
+  "description": "Счётчики /proc/net/dev всех узлов лабы, опрос раз в 20 мс. В легенде Last — текущая скорость. Сборщик: te/monitoring/collector.py.",
   "tags": [
     "srv6"
   ],
@@ -111,10 +111,11 @@
           "displayMode": "table",
           "placement": "right",
           "calcs": [
-            "max",
-            "mean"
+            "lastNotNull",
+            "mean",
+            "max"
           ],
-          "sortBy": "Max",
+          "sortBy": "Last *",
           "sortDesc": true,
           "showLegend": true
         },
