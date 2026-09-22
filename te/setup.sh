@@ -170,12 +170,20 @@ for pe in pe1 pe2 pe3 pe4; do
   ex $pe vtysh -c "clear bgp vrf RED ipv4 unicast *" >/dev/null 2>&1 || true
 done
 
+# Сразу после clear в ядре ещё стоят старые маршруты: проверка проходила
+# мгновенно, а потом маршруты снимались и доезжали заново через десятки секунд.
+# Поэтому ждём, пока снятие отработает, и требуем три удачные проверки подряд.
 info "Жду сети хостов в VRF на дальней стороне"
+sleep 5
 ok=0
-for _ in $(seq 45); do
-  if ex pe1 ip route show vrf RED 2>/dev/null | grep -q '10.2.0.0/24' &&
-     ex pe3 ip route show vrf RED 2>/dev/null | grep -q '10.1.0.0/24'; then
-    ok=1; break
+streak=0
+for _ in $(seq 60); do
+  if ex pe1 ip route show vrf RED 2>/dev/null | grep -q '10\.2\.0\.0/24' &&
+     ex pe3 ip route show vrf RED 2>/dev/null | grep -q '10\.1\.0\.0/24'; then
+    streak=$((streak + 1))
+    [ "$streak" -ge 3 ] && { ok=1; break; }
+  else
+    streak=0
   fi
   sleep 2
 done
@@ -200,6 +208,11 @@ info "Тот же префикс глазами BGP — два пути с ра�
 ex pe1 vtysh -c "show bgp vrf RED ipv4 unicast 10.2.0.0/24" || true
 
 info "H1 -> H2"
+# маршрут в ядре ещё не значит, что дошёл до всех: даём до 30 секунд
+for _ in $(seq 30); do
+  ex h1 ping -c1 -W1 10.2.0.2 >/dev/null 2>&1 && break
+  sleep 1
+done
 ex h1 ping -c3 10.2.0.2
 
 info "CE1 видит сеть h2 через оба PE"
