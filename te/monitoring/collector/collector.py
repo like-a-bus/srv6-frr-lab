@@ -137,47 +137,58 @@ stop = threading.Event()
 
 
 class Clock:
-    """Метки времени в мс, которые никогда не идут назад.
+    """Метки времени в мс: монотонные, с ровным шагом, без прыжков.
 
-    Часы WSL подстраиваются под Windows скачками. Шаг назад даёт две точки
-    счётчика с перепутанным порядком, VictoriaMetrics видит в этом сброс счётчика,
-    и rate() выдаёт всплеск размером со всё значение счётчика — гигабиты на
-    линке со 100 Мбит/с. Поэтому время считаем от монотонных часов, привязанных
-    к системным при старте, и перепривязываемся, когда системные ушли больше
-    чем на секунду в любую сторону.
+    Часы WSL подстраиваются под Windows скачками, у нас — назад на несколько
+    секунд раз в одну-две минуты. Любая попытка отработать такой скачок разом
+    ломает график:
 
-    Метки при этом никогда не идут назад: если после перепривязки время оказалось
-    не позже уже отправленного, точки не пишутся, пока часы не догонят. Получается
-    разрыв на графике — это честно и лечится само. Раньше в такой ситуации
-    сборщик держал монотонное время и писал точки в будущее (VictoriaMetrics
-    принимает их на два дня вперёд): когда реальное время до них доходило, старые
-    значения перемешивались со свежими в одной серии, и rate() показывал терабиты.
+    - если записать время как есть, точки идут вразнобой, VictoriaMetrics видит
+      сброс счётчика, и rate() выдаёт всплеск размером со всё значение счётчика;
+    - если держать монотонное время, метки уезжают в будущее, и когда реальное
+      время до них доходит, старые значения перемешиваются со свежими;
+    - если встать на паузу до тех пор, пока часы не догонят, то байты, набежавшие
+      за паузу, лягут на первый же интервал после неё: 47 МБ за 4 мс, то есть
+      94 Гбит/с на линке со 100 Мбит/с.
+
+    Поэтому расхождение выбирается плавно, как это делает NTP: не больше
+    SLEW (2%) от прошедшего времени за раз. Метки всегда растут примерно на шаг
+    опроса, всплесков нет, а цена — те же 2% погрешности по скорости, пока идёт
+    подведение. Большой скачок вперёд (после сна) отрабатывается шагом: на графике
+    будет разрыв, это честнее, чем подводить его часами.
     """
+
+    SLEW = 0.02        # доля прошедшего времени, на которую подводим часы
+    STEP_AHEAD = 10.0  # секунды: больше этого вперёд — шагаем, а не подводим
 
     def __init__(self):
         self.last = 0
-        self.behind_logged = False
-        self._anchor()
-
-    def _anchor(self):
-        self.wall0, self.mono0 = time.time(), time.monotonic()
+        self.mono = time.monotonic()
+        self.offset = time.time() - self.mono   # наше время = monotonic + offset
+        self.slewing = False
 
     def now_ms(self):
-        """Метка в мс или None, если время ещё не дошло до последней отправленной."""
-        t = self.wall0 + (time.monotonic() - self.mono0)
-        drift = time.time() - t
-        if abs(drift) > 1.0:
-            log(f"системные часы сместились на {drift:+.1f} с, перепривязываюсь")
-            self._anchor()
-            t = self.wall0
-        ms = int(t * 1000)
-        if ms <= self.last:
-            if not self.behind_logged:
-                log(f"время отстаёт от последней записи на {(self.last - ms) / 1000:.1f} с, "
-                    f"паузу держу до тех пор, пока не догонит")
-                self.behind_logged = True
-            return None
-        self.behind_logged = False
+        mono = time.monotonic()
+        elapsed, self.mono = mono - self.mono, mono
+        delta = (time.time() - mono) - self.offset   # куда ушли системные часы
+        if delta > self.STEP_AHEAD:
+            log(f"системные часы ушли вперёд на {delta:.1f} с, шагаю за ними")
+            self.offset += delta
+        elif delta:
+            allowed = self.SLEW * max(elapsed, 0.0)
+            if abs(delta) > allowed:
+                if not self.slewing:
+                    log(f"системные часы разошлись на {delta:+.1f} с, "
+                        f"подвожу плавно (не быстрее {self.SLEW * 100:.0f}%)")
+                    self.slewing = True
+                delta = allowed if delta > 0 else -allowed
+            elif self.slewing:
+                log("часы подведены")
+                self.slewing = False
+            self.offset += delta
+        ms = int((mono + self.offset) * 1000)
+        # метки разных узлов одного цикла могут совпасть, назад — никогда
+        ms = max(ms, self.last)
         self.last = ms
         return ms
 
@@ -214,9 +225,13 @@ def discover_loop():
 
 
 def sample_once():
-    ts = clock.now_ms()
-    if ts is None:
-        return
+    """Снимок счётчиков всех узлов.
+
+    Метка ставится после чтения файла каждого узла, а не одна на весь цикл:
+    если планировщик придержит поток в середине цикла, счётчики окажутся свежее
+    своей метки, и вся задержка попадёт в разницу за 20 мс — на графике это
+    одиночный пик в десятки раз выше полки.
+    """
     with targets_lock:
         snapshot = list(targets.values())
     rows = []
@@ -225,6 +240,9 @@ def sample_once():
             data = t.read()
         except OSError:
             continue  # контейнер пропал, discover_loop уберёт
+        ts = clock.now_ms()
+        if ts is None:
+            return
         for line in data.split(b"\n")[2:]:
             name, sep, rest = line.partition(b":")
             if not sep:
@@ -234,29 +252,34 @@ def sample_once():
                 continue
             vals = rest.split()
             for metric, idx in FIELDS.items():
-                rows.append(((t.node, iface, metric), int(vals[idx])))
+                rows.append(((t.node, iface, metric), ts, int(vals[idx])))
     with buf_lock:
-        for key, v in rows:
+        for key, ts, v in rows:
             entry = buf.get(key)
             if entry is None:
                 entry = buf[key] = ([], [])
             entry[0].append(ts)
             entry[1].append(v)
-    history.append((ts / 1000, {(n, i): v for (n, i, m), v in rows if m == "tx_bytes"}))
+    history.append({(n, i): (ts / 1000, v) for (n, i, m), ts, v in rows if m == "tx_bytes"})
 
 
 def current_rates(peers):
     """Бит/с с интерфейса в сторону соседа за последние RATE_WINDOW секунд."""
     if len(history) < 2:
         return time.time(), {}
-    (t0, old), (t1, new) = history[0], history[-1]
-    dt = t1 - t0
+    old, new = history[0], history[-1]
     links = {}
-    for (node, iface), v in new.items():
-        peer = peers.get((node, iface))
-        if peer and (node, iface) in old and dt > 0:
-            links[f"{node}>{peer}"] = max(0.0, (v - old[(node, iface)]) * 8 / dt)
-    return t1, links
+    latest = time.time()
+    for key, (t1, v) in new.items():
+        node, iface = key
+        peer = peers.get(key)
+        if not peer or key not in old:
+            continue
+        t0, v0 = old[key]
+        if t1 > t0:
+            links[f"{node}>{peer}"] = max(0.0, (v - v0) * 8 / (t1 - t0))
+            latest = max(latest, t1)
+    return latest, links
 
 
 class DualStackServer(http.server.ThreadingHTTPServer):
