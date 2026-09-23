@@ -41,6 +41,9 @@
   .map { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 8px 8px 4px; }
   .map svg { display: block; width: 100%; height: auto; }
   .map .hint { margin: 0 12px 8px; color: var(--muted); font-size: 14px; }
+  .legs { display: flex; flex-wrap: wrap; gap: 8px; }
+  .legs button[aria-pressed="true"] { border-color: var(--path); color: var(--path); font-weight: 600; }
+  #leg-status { margin: 0 0 10px; color: var(--muted); font-size: 14px; }
   .map .hint.load-status { color: var(--load); }
   .map .hint.load-status.bad { color: var(--err); }
 
@@ -169,6 +172,16 @@
     </section>
 
     <section>
+      <h2>Плечо ядра</h2>
+      <p id="leg-status" class="hint">Узнаю, какое плечо сейчас в приоритете…</p>
+      <div class="legs">
+        <button data-leg="upper">Верхнее: p1, p3</button>
+        <button data-leg="lower">Нижнее: p2, p4</button>
+        <button data-leg="none" class="quiet">Сбросить</button>
+      </div>
+    </section>
+
+    <section class="card">
       <h2>Входные PE</h2>
       <div id="ingress" class="muted">Появятся после загрузки топологии.</div>
     </section>
@@ -195,6 +208,7 @@ const state = { topo: null, path: [], prefix: "", options: [], egress: null, ing
 const LOAD_IDLE = 100e3;   // бит/с: ниже — служебный трафик IGP и BGP, линк считаем пустым
 const LOAD_POLL = 1000;
 const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
 
 function el(tag, attrs = {}, ...kids) {
   const svgTags = ["svg", "g", "line", "circle", "rect", "text", "title", "path", "marker", "defs"];
@@ -284,6 +298,37 @@ function renderMap() {
   }
   svg.append(lanes, badges, nodes, rates);
   paintLoad();
+}
+
+// --- плечо ядра ----------------------------------------------------------
+
+const LEG_TEXT = { upper: "верхнее (p1, p3)", lower: "нижнее (p2, p4)", none: "без приоритета, ECMP" };
+
+function showLeg(leg) {
+  $("#leg-status").textContent = `Сейчас: ${LEG_TEXT[leg] || leg}. Метрика IS-IS поднимается `
+    + `в сторону другого плеча, так что при отказе IGP уведёт трафик туда сам.`;
+  $$(".legs button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.leg === leg)));
+}
+
+async function loadLeg() {
+  try {
+    showLeg((await api("/api/leg")).leg);
+  } catch (err) {
+    $("#leg-status").textContent = `Плечо не определить: ${err.message}`;
+  }
+}
+
+async function setLeg(leg) {
+  const buttons = $$(".legs button");
+  buttons.forEach(b => (b.disabled = true));
+  $("#leg-status").textContent = "Ставлю метрики…";
+  try {
+    const data = await api("/api/leg", { leg });
+    showLeg(data.applied);
+  } catch (err) {
+    $("#leg-status").textContent = `Не получилось: ${err.message}`;
+  }
+  buttons.forEach(b => (b.disabled = false));
 }
 
 // --- нагрузка по линкам --------------------------------------------------
@@ -517,6 +562,8 @@ $("#reload").addEventListener("click", loadRoutes);
   }
   render();
   loadRoutes();
+  loadLeg();
+  $$(".legs button").forEach(b => b.addEventListener("click", () => setLeg(b.dataset.leg)));
   pollLoad();
 })();
 </script>

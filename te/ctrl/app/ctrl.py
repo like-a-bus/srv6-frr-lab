@@ -36,6 +36,11 @@ IFACE = os.environ.get("CTRL_IFACE", "eth3")  # интерфейс PE в VRF, с
 PE_RE = re.compile(os.environ.get("CTRL_PE_RE", r"^pe\d+$"))
 PORT = int(os.environ.get("CTRL_PORT", "8080"))
 COLLECTOR_URL = os.environ.get("CTRL_COLLECTOR", f"http://{LAB}-collector:9100")
+# Плечи ядра: верхнее — p1 и p3, нижнее — p2 и p4. Приоритет задаётся метрикой
+# IS-IS на интерфейсах в сторону нелюбимого плеча: путь через него становится
+# дороже, но остаётся, поэтому при отказе IGP сам уводит трафик туда.
+LEGS = {"upper": ("p1", "p3"), "lower": ("p2", "p4")}
+LEG_METRIC = int(os.environ.get("CTRL_LEG_METRIC", "100"))
 DOCKER_SOCK = "/var/run/docker.sock"
 HERE = Path(__file__).resolve().parent
 
@@ -159,6 +164,96 @@ def link_load():
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise ApiError(f"сборщик не отвечает ({COLLECTOR_URL}): {e}")
     return {"time": data.get("time") or time.time(), "links": data.get("links") or {}}
+
+
+# --- плечи ядра ------------------------------------------------------------
+
+_ifaces = {}
+
+
+def node_ifaces(node):
+    """{IPv6-адрес линка: интерфейс} — чтобы связать линк из BGP-LS с ethN."""
+    if node not in _ifaces:
+        _, out = pe_exec(node, ["ip", "-o", "-6", "addr", "show", "scope", "global"])
+        table = {}
+        for line in out.splitlines():
+            f = line.split()
+            if len(f) >= 4 and f[2] == "inet6":
+                try:
+                    table[str(ipaddress.IPv6Interface(f[3]).ip)] = f[1]
+                except ValueError:
+                    pass
+        _ifaces[node] = table
+    return _ifaces[node]
+
+
+def leg_ifaces(nodes):
+    """{узел: [интерфейсы в сторону nodes]} — сами эти узлы между собой не трогаем."""
+    plan = {}
+    for l in topology()["links"]:
+        if l["dstName"] in nodes and l["srcName"] not in nodes:
+            iface = node_ifaces(l["srcName"]).get(l["local"])
+            if iface:
+                plan.setdefault(l["srcName"], []).append(iface)
+    return plan
+
+
+def leg_metrics():
+    """{сосед: метрика} со стороны pe1 — по ним и определяем текущее плечо."""
+    # именно detail: без него команда печатает краткую таблицу без метрик
+    _, out = pe_exec("pe1", ["vtysh", "-c", "show isis interface detail"])
+    by_iface, iface = {}, None
+    for line in out.splitlines():
+        m = re.match(r"\s*Interface:\s+(\S+?),", line)
+        if m:
+            iface = m.group(1)
+            continue
+        m = re.match(r"\s*Metric:\s+(\d+)", line)
+        if m and iface:
+            by_iface[iface] = int(m.group(1))
+            iface = None
+    table = node_ifaces("pe1")
+    metrics = {}
+    for l in topology()["links"]:
+        if l["srcName"] == "pe1":
+            iface = table.get(l["local"])
+            if iface in by_iface:
+                metrics[l["dstName"]] = by_iface[iface]
+    return metrics
+
+
+def leg_status():
+    metrics = leg_metrics()
+    raised = {leg for leg, nodes in LEGS.items()
+              if any(metrics.get(n, 0) > 10 for n in nodes)}
+    if raised == {"lower"}:
+        leg = "upper"
+    elif raised == {"upper"}:
+        leg = "lower"
+    else:
+        leg = "none"
+    return {"leg": leg, "metric": LEG_METRIC, "neighbors": metrics}
+
+
+def set_leg(body):
+    leg = (body or {}).get("leg")
+    if leg not in ("upper", "lower", "none"):
+        raise ApiError("Плечо: upper, lower или none")
+    results = []
+    for name, nodes in LEGS.items():
+        command = (f"isis metric {LEG_METRIC}"
+                   if leg != "none" and name != leg else "no isis metric")
+        for node, ifaces in leg_ifaces(nodes).items():
+            commands = []
+            for iface in ifaces:
+                commands += [f"interface {iface}", command]
+            code, out = run_config(node, commands)
+            results.append({"node": node, "ifaces": ifaces, "command": command,
+                            "ok": code == 0, "out": out.strip()})
+    status = leg_status()
+    if leg != status["leg"]:
+        raise ApiError(f"Метрики применились не полностью, сейчас: {status['leg']}")
+    return {"applied": leg, "results": results, **status}
 
 
 # --- выполнение на PE через Docker API --------------------------------------
@@ -387,6 +482,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.handle_api(egress)
         elif url.path == "/api/load":
             self.handle_api(link_load)
+        elif url.path == "/api/leg":
+            self.handle_api(leg_status)
         elif url.path == "/api/routes":
             self.handle_api(lambda: {"routes": [{"pe": pe, "routes": pe_te_routes(pe)}
                                                 for pe in pe_names()]})
@@ -403,6 +500,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if url.path == "/api/commit":
             self.handle_api(lambda: commit(body))
+        elif url.path == "/api/leg":
+            self.handle_api(lambda: set_leg(body))
         elif url.path == "/api/remove":
             self.handle_api(lambda: {"results": [remove_route(check_pe(body.get("pe")),
                                                               parse_prefix(body.get("prefix")))]})
