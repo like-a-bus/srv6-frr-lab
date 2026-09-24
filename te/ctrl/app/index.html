@@ -34,7 +34,7 @@
   h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: 0.08em;
        display: flex; align-items: center; gap: 10px; }
   h1 svg { width: 30px; height: 30px; flex: none; }
-  #status { margin: 0; color: var(--muted); }
+  #status { color: var(--muted); }
   #status.bad { color: var(--err); }
 
   main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; padding: 0 28px 28px; align-items: start; }
@@ -152,13 +152,13 @@
     </svg>
     БУДКА
   </h1>
-  <p id="status">Читаю топологию из BGP-LS…</p>
 </header>
 
 <main>
   <div class="left">
     <div class="map">
       <svg id="map" viewBox="0 0 900 500" role="group" aria-label="Схема ядра"></svg>
+      <p id="status" class="hint">Читаю топологию из BGP-LS…</p>
       <p class="hint">Клик по стрелке добавляет шаг в конец пути, повторный клик убирает. У каждого направления линка свой End.X.</p>
       <p id="load-status" class="hint load-status">Нагрузка по линкам: жду данных от сборщика…</p>
     </div>
