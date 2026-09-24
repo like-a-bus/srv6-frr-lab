@@ -1,7 +1,7 @@
 {
   "uid": "srv6-lab",
   "title": "SRv6 лаба: трафик по интерфейсам",
-  "description": "Счётчики /proc/net/dev всех узлов лабы, опрос раз в 20 мс. В легенде Last — текущая скорость. Сборщик: te/monitoring/collector.py.",
+  "description": "Скорость по интерфейсам всех узлов лабы: сборщик считает её сам раз в 20 мс и пишет готовой. Сборщик: te/monitoring/collector/collector.py.",
   "tags": [
     "srv6"
   ],
@@ -36,10 +36,10 @@
           "uid": "vm"
         },
         "query": {
-          "query": "label_values(lab_if_tx_bytes_total, node)",
+          "query": "label_values(lab_if_tx_bps, node)",
           "refId": "node"
         },
-        "definition": "label_values(lab_if_tx_bytes_total, node)",
+        "definition": "label_values(lab_if_tx_bps, node)",
         "regex": "/^(p[0-9]+|pe[0-9]+)$/",
         "multi": true,
         "includeAll": true,
@@ -66,7 +66,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Линки ядра: передача",
-      "description": "Скорость с интерфейса узла в сторону соседа. Каждое направление линка — отдельная линия. Приблизьте момент отказа: точки в базе идут раз в 20 мс.",
+      "description": "Скорость с интерфейса узла в сторону соседа. Каждое направление линка — отдельная линия. Приблизьте момент отказа: точки идут раз в 20 мс.",
       "datasource": {
         "type": "prometheus",
         "uid": "vm"
@@ -84,7 +84,7 @@
             "type": "prometheus",
             "uid": "vm"
           },
-          "expr": "sum by (node, peer) (rate(lab_if_tx_bytes_total{node=~\"$node\", node=~\"p[0-9]+|pe[0-9]+\", peer=~\"p[0-9]+|pe[0-9]+\"}[$__rate_interval])) * 8",
+          "expr": "sum by (node, peer) (avg_over_time(lab_if_tx_bps{node=~\"$node\", node=~\"p[0-9]+|pe[0-9]+\", peer=~\"p[0-9]+|pe[0-9]+\"}[$__rate_interval]))",
           "legendFormat": "{{node}} → {{peer}}",
           "refId": "A",
           "range": true,
@@ -147,7 +147,7 @@
             "type": "prometheus",
             "uid": "vm"
           },
-          "expr": "sum(rate(lab_if_tx_packets_total{node=\"h1\", iface=\"eth1\"}[$__rate_interval])) - sum(rate(lab_if_rx_packets_total{node=\"h2\", iface=\"eth1\"}[$__rate_interval]))",
+          "expr": "sum(avg_over_time(lab_if_tx_pps{node=\"h1\", iface=\"eth1\"}[$__rate_interval])) - sum(avg_over_time(lab_if_rx_pps{node=\"h2\", iface=\"eth1\"}[$__rate_interval]))",
           "legendFormat": "h1 → h2",
           "refId": "A",
           "range": true,
@@ -158,7 +158,7 @@
             "type": "prometheus",
             "uid": "vm"
           },
-          "expr": "sum(rate(lab_if_tx_packets_total{node=\"h2\", iface=\"eth1\"}[$__rate_interval])) - sum(rate(lab_if_rx_packets_total{node=\"h1\", iface=\"eth1\"}[$__rate_interval]))",
+          "expr": "sum(avg_over_time(lab_if_tx_pps{node=\"h2\", iface=\"eth1\"}[$__rate_interval])) - sum(avg_over_time(lab_if_rx_pps{node=\"h1\", iface=\"eth1\"}[$__rate_interval]))",
           "legendFormat": "h2 → h1",
           "refId": "B",
           "range": true,
@@ -214,7 +214,7 @@
             "type": "prometheus",
             "uid": "vm"
           },
-          "expr": "sum by (node) (rate(lab_if_tx_bytes_total{node=~\"h[0-9]+\", iface=\"eth1\"}[$__rate_interval])) * 8",
+          "expr": "sum by (node) (avg_over_time(lab_if_tx_bps{node=~\"h[0-9]+\", iface=\"eth1\"}[$__rate_interval]))",
           "legendFormat": "{{node}} отправил",
           "refId": "A",
           "range": true,
@@ -225,7 +225,7 @@
             "type": "prometheus",
             "uid": "vm"
           },
-          "expr": "sum by (node) (rate(lab_if_rx_bytes_total{node=~\"h[0-9]+\", iface=\"eth1\"}[$__rate_interval])) * 8",
+          "expr": "sum by (node) (avg_over_time(lab_if_rx_bps{node=~\"h[0-9]+\", iface=\"eth1\"}[$__rate_interval]))",
           "legendFormat": "{{node}} получил",
           "refId": "B",
           "range": true,
@@ -282,7 +282,7 @@
             "type": "prometheus",
             "uid": "vm"
           },
-          "expr": "sum by (node, peer) (rate(lab_if_rx_bytes_total{node=~\"pe[0-9]+\", peer=~\"ce[0-9]+\"}[$__rate_interval])) * 8",
+          "expr": "sum by (node, peer) (avg_over_time(lab_if_rx_bps{node=~\"pe[0-9]+\", peer=~\"ce[0-9]+\"}[$__rate_interval]))",
           "legendFormat": "{{peer}} → {{node}}",
           "refId": "A",
           "range": true,
@@ -293,7 +293,7 @@
             "type": "prometheus",
             "uid": "vm"
           },
-          "expr": "sum by (node, peer) (rate(lab_if_tx_bytes_total{node=~\"pe[0-9]+\", peer=~\"ce[0-9]+\"}[$__rate_interval])) * 8",
+          "expr": "sum by (node, peer) (avg_over_time(lab_if_tx_bps{node=~\"pe[0-9]+\", peer=~\"ce[0-9]+\"}[$__rate_interval]))",
           "legendFormat": "{{node}} → {{peer}}",
           "refId": "B",
           "range": true,
@@ -350,7 +350,7 @@
             "type": "prometheus",
             "uid": "vm"
           },
-          "expr": "sum by (node, peer) (rate(lab_if_tx_packets_total{node=~\"$node\", node=~\"p[0-9]+|pe[0-9]+\", peer=~\"p[0-9]+|pe[0-9]+\"}[$__rate_interval]))",
+          "expr": "sum by (node, peer) (avg_over_time(lab_if_tx_pps{node=~\"$node\", node=~\"p[0-9]+|pe[0-9]+\", peer=~\"p[0-9]+|pe[0-9]+\"}[$__rate_interval]))",
           "legendFormat": "{{node}} → {{peer}}",
           "refId": "A",
           "range": true,

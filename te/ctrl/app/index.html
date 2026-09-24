@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Явные пути SRv6, лаба te</title>
+<title>БУДКА</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -29,9 +29,11 @@
   button, input { font: inherit; color: inherit; }
   :focus-visible { outline: 2px solid var(--pe); outline-offset: 2px; }
 
-  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  header { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
            padding: 20px 28px 12px; }
-  h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
+  h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: 0.08em;
+       display: flex; align-items: center; gap: 10px; }
+  h1 svg { width: 30px; height: 30px; flex: none; }
   #status { margin: 0; color: var(--muted); }
   #status.bad { color: var(--err); }
 
@@ -42,6 +44,13 @@
   .map svg { display: block; width: 100%; height: auto; }
   .map .hint { margin: 0 12px 8px; color: var(--muted); font-size: 14px; }
   .legs { display: flex; flex-wrap: wrap; gap: 8px; }
+  .traffic { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+  .traffic label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+  .traffic input, .traffic select { padding: 5px 7px; border: 1px solid var(--rule); border-radius: 6px;
+                                    font: inherit; font-size: 13px; }
+  .traffic-buttons { display: flex; gap: 8px; }
+  #traffic-status { margin: 0 0 10px; color: var(--muted); font-size: 14px; }
+  #traffic-status.on { color: var(--load); }
   .legs button[aria-pressed="true"] { border-color: var(--path); color: var(--path); font-weight: 600; }
   #leg-status { margin: 0 0 10px; color: var(--muted); font-size: 14px; }
   .map .hint.load-status { color: var(--load); }
@@ -130,7 +139,19 @@
 </head>
 <body>
 <header>
-  <h1>Явные пути через ядро</h1>
+  <h1>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M2 19.5h20"/>
+      <path d="M2.5 10 8 4.5 13.5 10"/>
+      <path d="M4 10v9.5h8V10"/>
+      <path d="M6.8 19.5v-6h2.4v6"/>
+      <path d="M18.5 19.5V5.5"/>
+      <path d="M18.5 7h3"/>
+      <circle cx="21" cy="10.5" r="1.4" fill="currentColor" stroke="none"/>
+    </svg>
+    БУДКА
+  </h1>
   <p id="status">Читаю топологию из BGP-LS…</p>
 </header>
 
@@ -172,6 +193,22 @@
     </section>
 
     <section>
+      <h2>Трафик h1 &rarr; h2</h2>
+      <p id="traffic-status" class="hint">Узнаю, идёт ли трафик…</p>
+      <div class="traffic">
+        <label>Скорость <input id="traffic-rate" value="100M" size="5"></label>
+        <label>Потоков <input id="traffic-streams" value="4" size="2" inputmode="numeric"></label>
+        <label>Протокол
+          <select id="traffic-proto"><option value="udp">UDP</option><option value="tcp">TCP</option></select>
+        </label>
+      </div>
+      <div class="traffic-buttons">
+        <button id="traffic-start" class="primary">Пустить</button>
+        <button id="traffic-stop" class="quiet">Остановить</button>
+      </div>
+    </section>
+
+    <section class="card">
       <h2>Плечо ядра</h2>
       <p id="leg-status" class="hint">Узнаю, какое плечо сейчас в приоритете…</p>
       <div class="legs">
@@ -298,6 +335,44 @@ function renderMap() {
   }
   svg.append(lanes, badges, nodes, rates);
   paintLoad();
+}
+
+// --- трафик --------------------------------------------------------------
+
+const TRAFFIC_POLL = 5000;
+
+function showTraffic(data) {
+  const status = $("#traffic-status");
+  status.className = data.running ? "hint on" : "hint";
+  status.textContent = data.running
+    ? `Идёт. Последний интервал сервера: ${data.last || "ещё нет"}`
+    : (data.summary ? `Остановлен. Итог: ${data.summary.replace(/\s+/g, " ")}` : "Трафика нет.");
+}
+
+async function loadTraffic() {
+  try {
+    showTraffic(await api("/api/traffic"));
+  } catch (err) {
+    $("#traffic-status").textContent = `Состояние трафика недоступно: ${err.message}`;
+  }
+  setTimeout(loadTraffic, TRAFFIC_POLL);
+}
+
+async function traffic(action) {
+  const buttons = [$("#traffic-start"), $("#traffic-stop")];
+  buttons.forEach((b) => (b.disabled = true));
+  $("#traffic-status").textContent = action === "stop" ? "Останавливаю…" : "Запускаю…";
+  try {
+    showTraffic(await api("/api/traffic", {
+      action,
+      rate: $("#traffic-rate").value.trim(),
+      streams: $("#traffic-streams").value.trim(),
+      proto: $("#traffic-proto").value,
+    }));
+  } catch (err) {
+    $("#traffic-status").textContent = `Не получилось: ${err.message}`;
+  }
+  buttons.forEach((b) => (b.disabled = false));
 }
 
 // --- плечо ядра ----------------------------------------------------------
@@ -563,6 +638,9 @@ $("#reload").addEventListener("click", loadRoutes);
   render();
   loadRoutes();
   loadLeg();
+  loadTraffic();
+  $("#traffic-start").addEventListener("click", () => traffic("start"));
+  $("#traffic-stop").addEventListener("click", () => traffic("stop"));
   $$(".legs button").forEach(b => b.addEventListener("click", () => setLeg(b.dataset.leg)));
   pollLoad();
 })();

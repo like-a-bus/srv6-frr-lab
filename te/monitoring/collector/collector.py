@@ -8,6 +8,14 @@
 ни docker exec не нужно. Раз в секунду отправляет накопленное в VictoriaMetrics
 (/api/v1/import) с метками времени в миллисекундах.
 
+В базу уходят не счётчики, а уже посчитанная скорость: биты и пакеты в секунду
+за интервал между соседними снимками. Счётчик плюс rate() на стороне базы —
+слишком хрупкая связка: любой скачок часов ломает либо порядок точек (база видит
+сброс счётчика и рисует терабиты), либо интервал (все накопленные байты ложатся
+на несколько миллисекунд). Здесь же интервал считается по монотонным часам,
+которые назад не идут, и часы влияют только на то, куда точка встанет
+по горизонтали: худшее, что бывает, — сдвиг или разрыв на графике.
+
 Контейнеры ищутся через Docker API по имени <лаба>-<узел> раз в 5 секунд,
 так что передеплой и новые PID подхватываются сами. Соседа на другом конце
 линка берём из topology-файла containerlab: метка peer.
@@ -46,8 +54,9 @@ PORT = int(os.environ.get("MON_PORT", "9100"))
 RATE_WINDOW = float(os.environ.get("MON_RATE_WINDOW", "1"))  # окно для /rates, секунды
 MAX_PENDING = 600_000  # точек в очереди, пока VictoriaMetrics недоступна
 
-# позиции полей в строке /proc/net/dev после "ethN:"
-FIELDS = {"rx_bytes": 0, "rx_packets": 1, "tx_bytes": 8, "tx_packets": 9}
+# позиции полей в строке /proc/net/dev после "ethN:" и во что их превращаем:
+# байты — в биты в секунду, пакеты — в пакеты в секунду
+FIELDS = {"rx_bps": (0, 8), "tx_bps": (8, 8), "rx_pps": (1, 1), "tx_pps": (9, 1)}
 
 
 def log(msg):
@@ -130,6 +139,7 @@ class Target:
 targets = {}            # узел -> Target
 targets_lock = threading.Lock()
 buf = {}                # (узел, интерфейс, метрика) -> ([ts], [значения])
+last_counters = {}      # (узел, интерфейс) -> (ts, {метрика: счётчик}) прошлого снимка
 buf_lock = threading.Lock()
 # последние снимки tx_bytes для /rates: (время, {(узел, интерфейс): байты})
 history = deque(maxlen=max(2, int(RATE_WINDOW / INTERVAL) + 1))
@@ -158,8 +168,8 @@ class Clock:
     будет разрыв, это честнее, чем подводить его часами.
     """
 
-    SLEW = 0.02        # доля прошедшего времени, на которую подводим часы
-    STEP_AHEAD = 10.0  # секунды: больше этого вперёд — шагаем, а не подводим
+    SLEW = 0.02    # доля прошедшего времени, на которую подводим часы
+    STEP = 60.0    # секунды: расхождение больше этого отрабатываем шагом
 
     def __init__(self):
         self.last = 0
@@ -171,8 +181,11 @@ class Clock:
         mono = time.monotonic()
         elapsed, self.mono = mono - self.mono, mono
         delta = (time.time() - mono) - self.offset   # куда ушли системные часы
-        if delta > self.STEP_AHEAD:
-            log(f"системные часы ушли вперёд на {delta:.1f} с, шагаю за ними")
+        if abs(delta) > self.STEP:
+            # После сна Windows часы уезжают на десятки минут: подводить такое
+            # плавно — сутки. Шагаем; на графике будет разрыв или наложение,
+            # но скорость в точках от этого не врёт.
+            log(f"системные часы ушли на {delta:+.0f} с, шагаю за ними")
             self.offset += delta
         elif delta:
             allowed = self.SLEW * max(elapsed, 0.0)
@@ -234,7 +247,7 @@ def sample_once():
     """
     with targets_lock:
         snapshot = list(targets.values())
-    rows = []
+    rows, seen = [], set()
     for t in snapshot:
         try:
             data = t.read()
@@ -251,8 +264,24 @@ def sample_once():
             if not IFACE_RE.match(iface):
                 continue
             vals = rest.split()
-            for metric, idx in FIELDS.items():
-                rows.append(((t.node, iface, metric), ts, int(vals[idx])))
+            key = (t.node, iface)
+            seen.add(key)
+            counters = {m: int(vals[idx]) for m, (idx, _) in FIELDS.items()}
+            was = last_counters.get(key)
+            last_counters[key] = (ts, counters)
+            if not was:
+                continue           # первый снимок: не с чем сравнивать
+            ts0, before = was
+            dt = (ts - ts0) / 1000
+            if dt <= 0:
+                continue
+            for metric, (_, mult) in FIELDS.items():
+                delta = counters[metric] - before[metric]
+                if delta < 0:
+                    continue       # контейнер пересоздали, счётчик начался заново
+                rows.append(((t.node, iface, metric), ts, delta * mult / dt))
+    for key in set(last_counters) - seen:
+        del last_counters[key]
     with buf_lock:
         for key, ts, v in rows:
             entry = buf.get(key)
@@ -260,26 +289,25 @@ def sample_once():
                 entry = buf[key] = ([], [])
             entry[0].append(ts)
             entry[1].append(v)
-    history.append({(n, i): (ts / 1000, v) for (n, i, m), ts, v in rows if m == "tx_bytes"})
+    history.append({(n, i): (ts / 1000, v) for (n, i, m), ts, v in rows if m == "tx_bps"})
 
 
 def current_rates(peers):
-    """Бит/с с интерфейса в сторону соседа за последние RATE_WINDOW секунд."""
-    if len(history) < 2:
+    """Бит/с с интерфейса в сторону соседа, среднее за последние RATE_WINDOW секунд."""
+    if not history:
         return time.time(), {}
-    old, new = history[0], history[-1]
+    total, count, latest = {}, {}, 0.0
+    for snapshot in history:
+        for key, (t, v) in snapshot.items():
+            total[key] = total.get(key, 0.0) + v
+            count[key] = count.get(key, 0) + 1
+            latest = max(latest, t)
     links = {}
-    latest = time.time()
-    for key, (t1, v) in new.items():
-        node, iface = key
+    for key, summ in total.items():
         peer = peers.get(key)
-        if not peer or key not in old:
-            continue
-        t0, v0 = old[key]
-        if t1 > t0:
-            links[f"{node}>{peer}"] = max(0.0, (v - v0) * 8 / (t1 - t0))
-            latest = max(latest, t1)
-    return latest, links
+        if peer:
+            links[f"{key[0]}>{peer}"] = summ / count[key]
+    return latest or time.time(), links
 
 
 class DualStackServer(http.server.ThreadingHTTPServer):
@@ -326,7 +354,7 @@ def serve(peers):
 def encode(batch, peers):
     lines = []
     for (node, iface, metric), (ts, vals) in batch.items():
-        m = {"__name__": f"lab_if_{metric}_total", "node": node, "iface": iface}
+        m = {"__name__": f"lab_if_{metric}", "node": node, "iface": iface}
         peer = peers.get((node, iface))
         if peer:
             m["peer"] = peer

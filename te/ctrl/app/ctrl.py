@@ -40,6 +40,9 @@ COLLECTOR_URL = os.environ.get("CTRL_COLLECTOR", f"http://{LAB}-collector:9100")
 # IS-IS на интерфейсах в сторону нелюбимого плеча: путь через него становится
 # дороже, но остаётся, поэтому при отказе IGP сам уводит трафик туда.
 LEGS = {"upper": ("p1", "p3"), "lower": ("p2", "p4")}
+# Трафик: то же, что делает te/traffic.sh, только кнопками
+SRC, DST, DST_IP = "h1", "h2", "10.2.0.2"
+SLOG, CLOG = "/tmp/iperf-server.log", "/tmp/iperf-client.log"
 LEG_METRIC = int(os.environ.get("CTRL_LEG_METRIC", "100"))
 DOCKER_SOCK = "/var/run/docker.sock"
 HERE = Path(__file__).resolve().parent
@@ -164,6 +167,71 @@ def link_load():
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise ApiError(f"сборщик не отвечает ({COLLECTOR_URL}): {e}")
     return {"time": data.get("time") or time.time(), "links": data.get("links") or {}}
+
+
+# --- трафик iperf3 ---------------------------------------------------------
+
+
+def iperf_running(node):
+    code, _ = pe_exec(node, ["pgrep", "-x", "iperf3"])
+    return code == 0
+
+
+def traffic_status():
+    running = iperf_running(SRC) and iperf_running(DST)
+    _, tail = pe_exec(DST, ["sh", "-c", f"tail -1 {SLOG} 2>/dev/null"])
+    return {"running": running, "last": tail.strip()}
+
+
+def traffic_stop():
+    # SIGINT, а не SIGTERM: так iperf3 успевает дописать итог
+    for node in (SRC, DST):
+        pe_exec(node, ["pkill", "-INT", "-x", "iperf3"])
+    time.sleep(1)
+    for node in (SRC, DST):
+        pe_exec(node, ["pkill", "-KILL", "-x", "iperf3"])
+    _, summary = pe_exec(DST, ["sh", "-c", f"grep -E 'receiver|Lost/Total' {SLOG} | tail -2"])
+    return {"running": False, "summary": summary.strip()}
+
+
+def split_rate(rate, streams):
+    """-b в iperf3 задаётся на поток, а скорость у нас суммарная."""
+    num, suffix = rate.rstrip("KMGkmg"), rate[len(rate.rstrip("KMGkmg")):]
+    try:
+        per = float(num) / max(streams, 1)
+    except ValueError:
+        raise ApiError(f"Скорость непонятна: {rate}")
+    return f"{per:g}{suffix}"
+
+
+def traffic_start(body):
+    body = body or {}
+    rate = str(body.get("rate") or "100M")
+    proto = body.get("proto") or "udp"
+    try:
+        streams = int(body.get("streams") or 4)
+    except (TypeError, ValueError):
+        raise ApiError("Потоков должно быть число")
+    if not 1 <= streams <= 32:
+        raise ApiError("Потоков: от 1 до 32")
+    if proto not in ("udp", "tcp"):
+        raise ApiError("Протокол: udp или tcp")
+    traffic_stop()
+    for node, log in ((DST, SLOG), (SRC, CLOG)):
+        pe_exec(node, ["rm", "-f", log])
+    exec_detached(DST, ["iperf3", "-s", "-i", "0.1", "--forceflush", "--logfile", SLOG])
+    time.sleep(1)
+    args = (["-u", "-b", split_rate(rate, streams), "-P", str(streams)] if proto == "udp"
+            else ["-P", str(streams)])
+    exec_detached(SRC, ["iperf3", "-c", DST_IP, "-t", "0", "-i", "1",
+                        *args, "--forceflush", "--logfile", CLOG])
+    time.sleep(2)
+    status = traffic_status()
+    if not status["running"]:
+        _, err = pe_exec(SRC, ["sh", "-c", f"tail -3 {CLOG} 2>/dev/null"])
+        traffic_stop()
+        raise ApiError(f"iperf3 не запустился: {err.strip() or 'лог пуст'}")
+    return {**status, "rate": rate, "streams": streams, "proto": proto}
 
 
 # --- плечи ядра ------------------------------------------------------------
@@ -313,6 +381,19 @@ def pe_exec(pe, cmd):
             break
         time.sleep(0.1)
     return code, demux(raw)
+
+
+def exec_detached(node, cmd):
+    """Запустить и не ждать: iperf3 живёт, пока его не остановят."""
+    name = f"{LAB}-{node}"
+    status, data = docker("POST", f"/containers/{name}/exec", {
+        "AttachStdout": False, "AttachStderr": False, "Tty": False, "Cmd": cmd})
+    if status != 201:
+        raise ApiError(f"{name}: Docker не создал exec: {data.decode(errors='replace').strip()}")
+    exec_id = json.loads(data)["Id"]
+    status, raw = docker("POST", f"/exec/{exec_id}/start", {"Detach": True, "Tty": False})
+    if status not in (200, 202):
+        raise ApiError(f"{name}: Docker не запустил exec: {raw.decode(errors='replace').strip()}")
 
 
 ROUTE_RE = re.compile(r"^\s*ip route (\S+) (\S+) segments (\S+)(?: vrf (\S+))?\s*$")
@@ -484,6 +565,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.handle_api(link_load)
         elif url.path == "/api/leg":
             self.handle_api(leg_status)
+        elif url.path == "/api/traffic":
+            self.handle_api(traffic_status)
         elif url.path == "/api/routes":
             self.handle_api(lambda: {"routes": [{"pe": pe, "routes": pe_te_routes(pe)}
                                                 for pe in pe_names()]})
@@ -502,6 +585,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.handle_api(lambda: commit(body))
         elif url.path == "/api/leg":
             self.handle_api(lambda: set_leg(body))
+        elif url.path == "/api/traffic":
+            self.handle_api(lambda: traffic_start(body) if body.get("action") != "stop"
+                            else traffic_stop())
         elif url.path == "/api/remove":
             self.handle_api(lambda: {"results": [remove_route(check_pe(body.get("pe")),
                                                               parse_prefix(body.get("prefix")))]})
